@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "declaration": true,
+    "esModuleInterop": true,
+    "lib": ["ESNext", "dom"],
+    "target": "ESNext",
+    "module": "commonjs",
+    "emitDeclarationOnly": true,
+    "jsx": "react",
+    "downlevelIteration": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "strict": true,
+    "outDir": "../../dist",
+    "baseUrl": "../../",
+    "paths": {
+      "@generator/*": ["./src/generator/*"],
+      "@decoder/*": ["./src/decoder/*"],
+      "@encoder/*": ["./src/encoder/*"],
+      "@interfaces/*": ["./src/interfaces/*"],
+      "@mse/*": ["./src/mse/*"]
+    }
+  },
+  "include": ["../../src/**/*", "../../sandbox/**/*"]
+}
