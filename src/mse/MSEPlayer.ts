@@ -3,12 +3,6 @@ import {Muxer, StreamTarget} from 'webm-muxer';
 
 export type AudioSourceId = 'dash1' | 'dash2';
 
-export interface IEncodedAudioChunk {
-  data: Uint8Array;
-  timestamp: number;
-  duration?: number;
-}
-
 /**
  * MSEPlayer - Plays encoded video/audio using Media Source Extensions
  * Uses separate SourceBuffers for video and audio to enable audio switching
@@ -41,7 +35,7 @@ class MSEPlayer {
   // Audio chunk duration in microseconds (20ms for Opus)
   #audioChunkDurationUs: number = 20_000;
   // Buffer audio from BOTH sources (key insight from MSEPlayer2!)
-  #audioBuffers: Map<AudioSourceId, IEncodedAudioChunk[]> = new Map([
+  #audioBuffers: Map<AudioSourceId, Array<IEncodedChunk>> = new Map([
     ['dash1', []],
     ['dash2', []]
   ]);
@@ -211,13 +205,13 @@ class MSEPlayer {
   /**
    * Append an encoded audio chunk - buffers ALL sources, only appends active
    */
-  appendAudioChunk = (chunk: IEncodedAudioChunk, sourceId: AudioSourceId): void => {
+  appendAudioChunk = (chunk: IEncodedChunk, sourceId: AudioSourceId): void => {
     if (this.#disposed || !this.#initialized || !this.#audioMuxer) {
       return;
     }
 
     // ALWAYS store chunk in the source's buffer (even if not active)
-    const buffer: IEncodedAudioChunk[] | undefined = this.#audioBuffers.get(sourceId);
+    const buffer: Array<IEncodedChunk> | undefined = this.#audioBuffers.get(sourceId);
     if (buffer) {
       buffer.push(chunk);
       // Keep only last 60 seconds of audio (3000 chunks at 20ms each)
@@ -259,8 +253,8 @@ class MSEPlayer {
     }
 
     const oldSource: AudioSourceId = this.#activeAudioSource;
-    const newBuffer: IEncodedAudioChunk[] | undefined = this.#audioBuffers.get(sourceId);
-    const oldBuffer: IEncodedAudioChunk[] | undefined = this.#audioBuffers.get(oldSource);
+    const newBuffer: Array<IEncodedChunk> | undefined = this.#audioBuffers.get(sourceId);
+    const oldBuffer: Array<IEncodedChunk> | undefined = this.#audioBuffers.get(oldSource);
 
     // Get ACTUAL playback position (not buffered position)
     const currentTime: number = this.#videoElement?.currentTime ?? 0;
@@ -315,7 +309,7 @@ class MSEPlayer {
 
       // Find chunks in the new buffer starting from current playback position
       const startIndex: number = Math.max(0, Math.min(playbackChunkIndex, newBuffer.length - 1));
-      const chunksToFeed: IEncodedAudioChunk[] = newBuffer.slice(startIndex);
+      const chunksToFeed: Array<IEncodedChunk> = newBuffer.slice(startIndex);
 
       // eslint-disable-next-line no-console
       console.log(`[MSEPlayer] Feeding ${chunksToFeed.length} buffered chunks from index ${startIndex}`);

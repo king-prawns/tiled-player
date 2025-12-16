@@ -2,6 +2,7 @@
 import {createFile, DataStream, type ISOFile, type Sample, type Track, type Movie} from 'mp4box';
 
 import generateDash from './dash';
+import IEncodedChunk from '@interfaces/IEncodedChunk';
 
 // Two DASH MPD URLs (clear, no DRM)
 const DASH_URL_1: string = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd';
@@ -17,16 +18,10 @@ const AUDIO_SAMPLE_RATE: number = 48000;
 export type SwapCallback = (swapped: boolean) => void;
 export type AudioSourceId = 'dash1' | 'dash2';
 
-export interface IEncodedAudioChunk {
-  data: Uint8Array;
-  timestamp: number;
-  duration?: number;
-}
-
 export interface MergeDashOptions {
   signal?: AbortSignal;
   onSwap?: SwapCallback;
-  onAudioChunk?: (chunk: IEncodedAudioChunk, sourceId: AudioSourceId) => void;
+  onAudioChunk?: (chunk: IEncodedChunk, sourceId: AudioSourceId) => void;
 }
 
 interface DashDecoder {
@@ -78,7 +73,7 @@ function getCodecDescription(mp4File: ISOFile, trackId: number): Uint8Array | un
  */
 function createDashDecoder(
   sourceId: AudioSourceId,
-  onAudioChunk?: (chunk: IEncodedAudioChunk, sourceId: AudioSourceId) => void,
+  onAudioChunk?: (chunk: IEncodedChunk, sourceId: AudioSourceId) => void,
   signal?: AbortSignal
 ): DashDecoder {
   const frames: Array<VideoFrame> = [];
@@ -103,7 +98,7 @@ function createDashDecoder(
       output: (chunk: EncodedAudioChunk) => {
         const data = new Uint8Array(chunk.byteLength);
         chunk.copyTo(data);
-        onAudioChunk({data, timestamp: chunk.timestamp, duration: chunk.duration || 20000}, sourceId);
+        onAudioChunk({data, timestamp: chunk.timestamp, key: chunk.type === 'key'}, sourceId);
       },
       error: (e: DOMException) => {
         // eslint-disable-next-line no-console

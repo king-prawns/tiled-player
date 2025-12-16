@@ -1,4 +1,3 @@
-import IEncodedAudioChunk from '@interfaces/IEncodedAudioChunk';
 import IEncodedChunk from '@interfaces/IEncodedChunk';
 
 // Sample DASH MPD URL (Big Buck Bunny - clear, no DRM)
@@ -219,7 +218,7 @@ export interface DashGeneratorOptions {
   signal?: AbortSignal;
   preferOpus?: boolean;
   onVideoChunk?: (chunk: IEncodedChunk) => void;
-  onAudioChunk?: (chunk: IEncodedAudioChunk) => void;
+  onAudioChunk?: (chunk: IEncodedChunk) => void;
 }
 
 /**
@@ -308,7 +307,7 @@ async function* generateDash(options: DashGeneratorOptions = {}): AsyncGenerator
       if (options.onAudioChunk) {
         options.onAudioChunk({
           timestamp: seg.timestamp,
-          duration: seg.duration,
+          key: i === 0, // First segment is keyframe
           data
         });
       }

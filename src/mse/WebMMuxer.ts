@@ -1,5 +1,4 @@
 import IEncodedChunk from '@interfaces/IEncodedChunk';
-import IEncodedAudioChunk from '@interfaces/IEncodedAudioChunk';
 
 export interface IMuxedChunk {
   data: Uint8Array;
@@ -100,7 +99,7 @@ class WebMMuxer {
    * Mux an audio chunk into WebM cluster format
    * For MSE: each chunk needs a complete cluster with known size
    */
-  muxAudioChunk(chunk: IEncodedAudioChunk): Uint8Array {
+  muxAudioChunk(chunk: IEncodedChunk): Uint8Array {
     const timestampMs: number = Math.floor(chunk.timestamp / 1000);
 
     // Create SimpleBlock first to know its size

@@ -1,7 +1,7 @@
-interface IEncodedData {
+interface IEncodedChunk {
   timestamp: number;
   key: boolean;
   data: Uint8Array;
 }
 
-export default IEncodedData;
+export default IEncodedChunk;

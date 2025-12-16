@@ -2,7 +2,7 @@
 import Encoder from '@encoder/encoder';
 // import generateCamera from '@generator/camera';
 // import generateMerge, {MergeOptions} from '@generator/merge';
-import generateMergeDash, {AudioSourceId, IEncodedAudioChunk, MergeDashOptions} from '@generator/mergeDash';
+import generateMergeDash, {AudioSourceId, MergeDashOptions} from '@generator/mergeDash';
 // import generateVideo from '@generator/video';
 import IEncodedChunk from '@interfaces/IEncodedChunk';
 import {MSEPlayer} from '@mse/index';
@@ -52,7 +52,7 @@ class TiledPlayer {
         // eslint-disable-next-line no-console
         console.log(`[WebCodecs] Audio switched to ${activeSource}`);
       },
-      onAudioChunk: (chunk: IEncodedAudioChunk, sourceId: AudioSourceId) => {
+      onAudioChunk: (chunk: IEncodedChunk, sourceId: AudioSourceId) => {
         this.#msePlayer?.appendAudioChunk(chunk, sourceId);
       }
     };
