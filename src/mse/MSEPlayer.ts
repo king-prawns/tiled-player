@@ -1,7 +1,8 @@
+import {AudioSourceId} from '@dash/DashDecoder';
+import DashStreamManager from '@dash/DashStreamManager';
+import Encoder from '@encoder/encoder';
 import IEncodedChunk from '@interfaces/IEncodedChunk';
 import {Muxer, StreamTarget} from 'webm-muxer';
-
-export type AudioSourceId = 'dash1' | 'dash2';
 
 /**
  * MSEPlayer - Plays encoded video/audio using Media Source Extensions
@@ -41,8 +42,25 @@ class MSEPlayer {
   ]);
 
   #videoChunkCount: number = 0;
-  #audioChunkCount: number = 0;
   #disposed: boolean = false;
+
+  // DASH stream management - MSE player is the orchestrator
+  #stream1: DashStreamManager | null = null;
+  #stream2: DashStreamManager | null = null;
+  #encoder: Encoder | null = null;
+  #abortController: AbortController | null = null;
+
+  // Compositor state
+  #swapped: boolean = false;
+  #pipX: number = 0;
+  #pipY: number = 0;
+  #pipWidth: number = 0;
+  #pipHeight: number = 0;
+
+  // Compositor constants
+  static readonly MIN_PIP_SIZE: number = 80;
+  static readonly RESIZE_HANDLE_SIZE: number = 15;
+  static readonly MAX_BUFFER_SEC: number = 30;
 
   constructor(videoElementId: string, width: number = 640, height: number = 480, sampleRate: number = 48000) {
     this.#videoElementId = videoElementId;
@@ -118,7 +136,7 @@ class MSEPlayer {
     // Create video muxer (video only)
     this.#videoMuxer = new Muxer({
       target: new StreamTarget({
-        onData: (data: Uint8Array, _position: number) => {
+        onData: (data: Uint8Array, _position: number): void => {
           this.#videoPendingChunks.push(data);
           this.#tryAppendVideo();
         }
@@ -139,37 +157,6 @@ class MSEPlayer {
     this.#initialized = true;
     // eslint-disable-next-line no-console
     console.log('[MSEPlayer] Initialized with video:', videoMimeType, 'audio:', audioMimeType);
-  };
-
-  /**
-   * Create or recreate the audio muxer
-   */
-  #createAudioMuxer = (): void => {
-    // Finalize existing muxer if any
-    if (this.#audioMuxer) {
-      try {
-        this.#audioMuxer.finalize();
-      } catch {
-        // Ignore errors
-      }
-    }
-
-    this.#audioMuxer = new Muxer({
-      target: new StreamTarget({
-        onData: (data: Uint8Array, _position: number): void => {
-          this.#audioPendingChunks.push(data);
-          this.#tryAppendAudio();
-        }
-      }),
-      audio: {
-        codec: 'A_OPUS',
-        sampleRate: this.#sampleRate,
-        numberOfChannels: 2
-      },
-      firstTimestampBehavior: 'offset',
-      streaming: true,
-      type: 'webm'
-    });
   };
 
   /**
@@ -224,8 +211,6 @@ class MSEPlayer {
     if (sourceId !== this.#activeAudioSource) {
       return;
     }
-
-    this.#audioChunkCount++;
 
     // Use CONTINUOUS timestamps - always increment from last appended
     const adjustedTimestamp: number = this.#lastAppendedAudioTimestamp;
@@ -341,8 +326,72 @@ class MSEPlayer {
     return this.#activeAudioSource;
   };
 
+  /**
+   * Load and play two DASH streams with PiP compositor
+   * MSE player orchestrates all fetching, decoding, compositing, and encoding
+   */
+  load = async (mpdUrl1: string, mpdUrl2: string): Promise<void> => {
+    this.#abortController = new AbortController();
+    const signal: AbortSignal = this.#abortController.signal;
+
+    // Initialize PiP position
+    this.#pipX = this.#width - this.#width / 3 - 10;
+    this.#pipY = this.#height - this.#height / 3 - 10;
+    this.#pipWidth = this.#width / 3;
+    this.#pipHeight = this.#height / 3;
+
+    // Create encoder
+    this.#encoder = new Encoder();
+    await this.#encoder.init();
+    this.#encoder.onChunk((chunk: IEncodedChunk) => {
+      this.appendVideoChunk(chunk);
+    });
+
+    // Create DASH stream managers
+    this.#stream1 = new DashStreamManager({
+      mpdUrl: mpdUrl1,
+      sourceId: 'dash1',
+      onAudioChunk: (chunk: IEncodedChunk, sourceId: AudioSourceId): void =>
+        this.appendAudioChunk(chunk, sourceId),
+      signal
+    });
+
+    this.#stream2 = new DashStreamManager({
+      mpdUrl: mpdUrl2,
+      sourceId: 'dash2',
+      onAudioChunk: (chunk: IEncodedChunk, sourceId: AudioSourceId): void =>
+        this.appendAudioChunk(chunk, sourceId),
+      signal
+    });
+
+    // Initialize streams (fetch manifests)
+    await Promise.all([this.#stream1.init(), this.#stream2.init()]);
+
+    // Setup mouse event handlers for PiP interaction
+    this.#setupPipInteraction();
+
+    // Start the main loop
+    await this.#runMainLoop();
+
+    // Cleanup
+    await this.#encoder?.flush();
+  };
+
   dispose = (): void => {
     this.#disposed = true;
+
+    // Abort any ongoing fetches
+    this.#abortController?.abort();
+
+    // Destroy DASH stream managers
+    this.#stream1?.destroy();
+    this.#stream2?.destroy();
+    this.#stream1 = null;
+    this.#stream2 = null;
+
+    // Destroy encoder
+    this.#encoder?.destroy();
+    this.#encoder = null;
 
     // Finalize muxers
     if (this.#videoMuxer) {
@@ -381,6 +430,280 @@ class MSEPlayer {
     }
     this.#videoPendingChunks = [];
     this.#audioPendingChunks = [];
+  };
+
+  /**
+   * Get the video buffer ahead in seconds
+   * Returns how many seconds of video are buffered ahead of current playback position
+   */
+  #getVideoBufferAhead = (): number => {
+    if (!this.#videoElement || !this.#videoSourceBuffer) {
+      return 0;
+    }
+
+    const currentTime: number = this.#videoElement.currentTime;
+    const buffered: TimeRanges = this.#videoSourceBuffer.buffered;
+
+    // Find the buffer range that contains currentTime
+    for (let i: number = 0; i < buffered.length; i++) {
+      const start: number = buffered.start(i);
+      const end: number = buffered.end(i);
+
+      if (currentTime >= start && currentTime <= end) {
+        return end - currentTime;
+      }
+    }
+
+    return 0;
+  };
+
+  /**
+   * Create or recreate the audio muxer
+   */
+  #createAudioMuxer = (): void => {
+    // Finalize existing muxer if any
+    if (this.#audioMuxer) {
+      try {
+        this.#audioMuxer.finalize();
+      } catch {
+        // Ignore errors
+      }
+    }
+
+    this.#audioMuxer = new Muxer({
+      target: new StreamTarget({
+        onData: (data: Uint8Array, _position: number): void => {
+          this.#audioPendingChunks.push(data);
+          this.#tryAppendAudio();
+        }
+      }),
+      audio: {
+        codec: 'A_OPUS',
+        sampleRate: this.#sampleRate,
+        numberOfChannels: 2
+      },
+      firstTimestampBehavior: 'offset',
+      streaming: true,
+      type: 'webm'
+    });
+  };
+
+  /**
+   * Main loop - MSE player controls everything
+   */
+  #runMainLoop = async (): Promise<void> => {
+    const signal: AbortSignal | undefined = this.#abortController?.signal;
+    if (!this.#stream1 || !this.#stream2) return;
+
+    // eslint-disable-next-line no-console
+    console.log('[MSEPlayer] Fetching initial segments...');
+
+    // Initial fetch - get enough frames to start
+    await this.#fetchUntilFramesAvailable(5);
+
+    // eslint-disable-next-line no-console
+    console.log('[MSEPlayer] Starting compositor loop');
+
+    // Create OffscreenCanvas for compositing
+    const canvas: OffscreenCanvas = new OffscreenCanvas(this.#width, this.#height);
+    const ctx: OffscreenCanvasRenderingContext2D | null = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Failed to get 2D context');
+    }
+
+    const frameInterval: number = 1000 / 30;
+    let lastFrameTime: number = 0;
+    let frameCount: number = 0;
+
+    while (!signal?.aborted && !this.#disposed) {
+      const now: number = performance.now();
+      if (now - lastFrameTime < frameInterval) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r: (value: unknown) => void): number => window.setTimeout(r, 5));
+        continue;
+      }
+      lastFrameTime = now;
+
+      // Check buffer and fetch more if needed
+      this.#maintainBuffer();
+
+      // Get frames from decoders
+      const frame1: VideoFrame | undefined = this.#stream1.decoder.getFrame();
+      const frame2: VideoFrame | undefined = this.#stream2.decoder.getFrame();
+
+      if (!frame1 && !frame2) {
+        const bothEnded: boolean = this.#stream1.isEnded && this.#stream2.isEnded;
+        const noMoreFrames: boolean =
+          this.#stream1.decoder.frames.length === 0 && this.#stream2.decoder.frames.length === 0;
+
+        if (bothEnded && noMoreFrames) {
+          // eslint-disable-next-line no-console
+          console.log('[MSEPlayer] Both streams ended');
+          break;
+        }
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r: (value: unknown) => void): number => window.setTimeout(r, 10));
+        continue;
+      }
+
+      // Composite frames
+      const bgFrame: VideoFrame | undefined = this.#swapped ? frame2 : frame1;
+      const pipFrame: VideoFrame | undefined = this.#swapped ? frame1 : frame2;
+
+      if (bgFrame) {
+        ctx.drawImage(bgFrame, 0, 0, this.#width, this.#height);
+        bgFrame.close();
+      }
+
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(this.#pipX - 1, this.#pipY - 1, this.#pipWidth + 2, this.#pipHeight + 2);
+
+      if (pipFrame) {
+        ctx.drawImage(pipFrame, this.#pipX, this.#pipY, this.#pipWidth, this.#pipHeight);
+        pipFrame.close();
+      }
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.fillRect(
+        this.#pipX + this.#pipWidth - MSEPlayer.RESIZE_HANDLE_SIZE,
+        this.#pipY + this.#pipHeight - MSEPlayer.RESIZE_HANDLE_SIZE,
+        MSEPlayer.RESIZE_HANDLE_SIZE,
+        MSEPlayer.RESIZE_HANDLE_SIZE
+      );
+
+      // Encode and send to MSE
+      const timestamp: number = frameCount * (1000000 / 30);
+      const videoFrame: VideoFrame = new VideoFrame(canvas, {timestamp});
+      this.#encoder?.encode(videoFrame);
+      frameCount++;
+    }
+  };
+
+  /**
+   * Fetch segments until we have enough frames
+   */
+  #fetchUntilFramesAvailable = async (minFrames: number): Promise<void> => {
+    if (!this.#stream1 || !this.#stream2) return;
+
+    while (
+      (this.#stream1.decoder.frames.length < minFrames || this.#stream2.decoder.frames.length < minFrames) &&
+      !this.#disposed
+    ) {
+      // eslint-disable-next-line no-await-in-loop
+      const hasMore1: boolean = await this.#stream1.fetchNextChunk();
+      // eslint-disable-next-line no-await-in-loop
+      const hasMore2: boolean = await this.#stream2.fetchNextChunk();
+
+      if (!hasMore1 && !hasMore2) break;
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r: (value: unknown) => void): number => window.setTimeout(r, 10));
+    }
+  };
+
+  /**
+   * Maintain buffer - fetch more when buffer drops below threshold
+   */
+  #maintainBuffer = (): void => {
+    if (!this.#stream1 || !this.#stream2) return;
+
+    const bufferAhead: number = this.#getVideoBufferAhead();
+
+    // Fetch more if buffer is below threshold
+    if (bufferAhead < MSEPlayer.MAX_BUFFER_SEC) {
+      // Fetch a few chunks from each stream
+      if (!this.#stream1.isEnded) {
+        this.#stream1.fetchNextChunk();
+      }
+      if (!this.#stream2.isEnded) {
+        this.#stream2.fetchNextChunk();
+      }
+    }
+  };
+
+  /**
+   * Setup mouse event handlers for PiP drag, resize, and swap
+   */
+  #setupPipInteraction = (): void => {
+    if (!this.#videoElement) return;
+
+    let isDragging: boolean = false;
+    let isResizing: boolean = false;
+    let dragOffsetX: number = 0;
+    let dragOffsetY: number = 0;
+
+    const isInPipArea = (x: number, y: number): boolean => {
+      return (
+        x >= this.#pipX &&
+        x <= this.#pipX + this.#pipWidth &&
+        y >= this.#pipY &&
+        y <= this.#pipY + this.#pipHeight
+      );
+    };
+
+    const isInResizeHandle = (x: number, y: number): boolean => {
+      return (
+        x >= this.#pipX + this.#pipWidth - MSEPlayer.RESIZE_HANDLE_SIZE &&
+        x <= this.#pipX + this.#pipWidth &&
+        y >= this.#pipY + this.#pipHeight - MSEPlayer.RESIZE_HANDLE_SIZE &&
+        y <= this.#pipY + this.#pipHeight
+      );
+    };
+
+    const getScaledCoords = (e: MouseEvent): {x: number; y: number} => {
+      const rect: DOMRect = (e.target as HTMLElement).getBoundingClientRect();
+      const scaleX: number = this.#width / rect.width;
+      const scaleY: number = this.#height / rect.height;
+
+      return {
+        x: (e.clientX - rect.left) * scaleX,
+        y: (e.clientY - rect.top) * scaleY
+      };
+    };
+
+    const handleMouseDown = (e: MouseEvent): void => {
+      const {x, y} = getScaledCoords(e);
+      if (isInResizeHandle(x, y)) {
+        isResizing = true;
+      } else if (isInPipArea(x, y)) {
+        isDragging = true;
+        dragOffsetX = x - this.#pipX;
+        dragOffsetY = y - this.#pipY;
+      }
+    };
+
+    const handleMouseMove = (e: MouseEvent): void => {
+      const {x, y} = getScaledCoords(e);
+      if (isDragging) {
+        this.#pipX = Math.max(0, Math.min(this.#width - this.#pipWidth, x - dragOffsetX));
+        this.#pipY = Math.max(0, Math.min(this.#height - this.#pipHeight, y - dragOffsetY));
+      } else if (isResizing) {
+        this.#pipWidth = Math.max(MSEPlayer.MIN_PIP_SIZE, Math.min(this.#width - this.#pipX, x - this.#pipX));
+        this.#pipHeight = Math.max(
+          MSEPlayer.MIN_PIP_SIZE,
+          Math.min(this.#height - this.#pipY, y - this.#pipY)
+        );
+      }
+    };
+
+    const handleMouseUp = (): void => {
+      isDragging = false;
+      isResizing = false;
+    };
+
+    const handleDoubleClick = (): void => {
+      this.#swapped = !this.#swapped;
+      // Switch audio source
+      this.setActiveAudioSource(this.#swapped ? 'dash2' : 'dash1');
+      // eslint-disable-next-line no-console
+      console.log(`[MSEPlayer] Swapped - audio now: ${this.#swapped ? 'dash2' : 'dash1'}`);
+    };
+
+    this.#videoElement.addEventListener('mousedown', handleMouseDown);
+    this.#videoElement.addEventListener('mousemove', handleMouseMove);
+    this.#videoElement.addEventListener('mouseup', handleMouseUp);
+    this.#videoElement.addEventListener('mouseleave', handleMouseUp);
+    this.#videoElement.addEventListener('dblclick', handleDoubleClick);
   };
 
   #tryAppendVideo = (): void => {

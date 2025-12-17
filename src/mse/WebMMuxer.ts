@@ -1,11 +1,5 @@
 import IEncodedChunk from '@interfaces/IEncodedChunk';
 
-export interface IMuxedChunk {
-  data: Uint8Array;
-  isVideo: boolean;
-  timestamp: number;
-}
-
 /**
  * WebM muxer for VP8 video and Opus audio
  * Creates WebM container from raw VP8/Opus frames

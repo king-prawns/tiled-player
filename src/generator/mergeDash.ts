@@ -1,8 +1,18 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import {createFile, DataStream, type ISOFile, type Sample, type Track, type Movie} from 'mp4box';
+
+import IEncodedChunk from '@interfaces/IEncodedChunk';
+import {
+  createFile,
+  DataStream,
+  type ISOFile,
+  type Sample,
+  type Track,
+  type Movie,
+  Endianness,
+  MP4BoxBuffer
+} from 'mp4box';
 
 import generateDash from './dash';
-import IEncodedChunk from '@interfaces/IEncodedChunk';
 
 // Two DASH MPD URLs (clear, no DRM)
 const DASH_URL_1: string = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd';
@@ -22,6 +32,8 @@ export interface MergeDashOptions {
   signal?: AbortSignal;
   onSwap?: SwapCallback;
   onAudioChunk?: (chunk: IEncodedChunk, sourceId: AudioSourceId) => void;
+  // MSE player controls fetching - wait function that resolves when buffer needs data
+  waitUntilBufferNeeded?: () => Promise<void>;
 }
 
 interface DashDecoder {
@@ -29,6 +41,9 @@ interface DashDecoder {
   feedData: (data: Uint8Array, type: 'video' | 'audio') => void;
   getFrame: () => VideoFrame | undefined;
   destroy: () => void;
+  isEnded: () => boolean;
+  // Mark this decoder as ended (no more segments)
+  setEnded: () => void;
 }
 
 /**
@@ -37,28 +52,27 @@ interface DashDecoder {
  */
 function getCodecDescription(mp4File: ISOFile, trackId: number): Uint8Array | undefined {
   // Get track info
-  const trak = (mp4File as any).getTrackById(trackId);
+  const trak: any = mp4File.getTrackById(trackId);
   if (!trak) return undefined;
 
-  const entries = trak.mdia?.minf?.stbl?.stsd?.entries;
+  const entries: any = trak.mdia?.minf?.stbl?.stsd?.entries;
   if (!entries || entries.length === 0) return undefined;
 
-  const entry = entries[0];
+  const entry: any = entries[0];
 
   // For AVC/H.264, we need the avcC box
   if (entry.avcC) {
     // Use mp4box's DataStream to serialize the box
-    const DS = DataStream as any;
-    const stream = new DS(undefined, 0, DS.BIG_ENDIAN);
+    const stream: DataStream = new DataStream(undefined, 0, Endianness.BIG_ENDIAN);
     entry.avcC.write(stream);
     // Skip first 8 bytes (box size + box type)
+
     return new Uint8Array(stream.buffer, 8);
   }
 
   // For HEVC/H.265, we need the hvcC box
   if (entry.hvcC) {
-    const DS = DataStream as any;
-    const stream = new DS(undefined, 0, DS.BIG_ENDIAN);
+    const stream: DataStream = new DataStream(undefined, 0, Endianness.BIG_ENDIAN);
     entry.hvcC.write(stream);
 
     return new Uint8Array(stream.buffer, 8);
@@ -77,15 +91,16 @@ function createDashDecoder(
   signal?: AbortSignal
 ): DashDecoder {
   const frames: Array<VideoFrame> = [];
-  let videoFileOffset = 0;
-  let audioFileOffset = 0;
+  let videoFileOffset: number = 0;
+  let audioFileOffset: number = 0;
+  let hasEnded: boolean = false;
 
   // Video decoder
-  const videoDecoder = new VideoDecoder({
-    output: (frame: VideoFrame) => {
+  const videoDecoder: VideoDecoder = new VideoDecoder({
+    output: (frame: VideoFrame): void => {
       frames.push(frame);
     },
-    error: (e: DOMException) => {
+    error: (e: DOMException): void => {
       // eslint-disable-next-line no-console
       console.error(`[${sourceId}] VideoDecoder error:`, e);
     }
@@ -95,12 +110,12 @@ function createDashDecoder(
   let audioEncoder: AudioEncoder | null = null;
   if (onAudioChunk) {
     audioEncoder = new AudioEncoder({
-      output: (chunk: EncodedAudioChunk) => {
-        const data = new Uint8Array(chunk.byteLength);
+      output: (chunk: EncodedAudioChunk): void => {
+        const data: Uint8Array = new Uint8Array(chunk.byteLength);
         chunk.copyTo(data);
         onAudioChunk({data, timestamp: chunk.timestamp, key: chunk.type === 'key'}, sourceId);
       },
-      error: (e: DOMException) => {
+      error: (e: DOMException): void => {
         // eslint-disable-next-line no-console
         console.error(`[${sourceId}] AudioEncoder error:`, e);
       }
@@ -117,14 +132,14 @@ function createDashDecoder(
   let audioDecoder: AudioDecoder | null = null;
   if (onAudioChunk) {
     audioDecoder = new AudioDecoder({
-      output: (audioData: AudioData) => {
+      output: (audioData: AudioData): void => {
         // Re-encode to Opus
         if (audioEncoder && audioEncoder.state === 'configured') {
           audioEncoder.encode(audioData);
         }
         audioData.close();
       },
-      error: (e: DOMException) => {
+      error: (e: DOMException): void => {
         // eslint-disable-next-line no-console
         console.error(`[${sourceId}] AudioDecoder error:`, e);
       }
@@ -146,7 +161,7 @@ function createDashDecoder(
     if (videoTrack) {
       videoTrackId = videoTrack.id;
 
-      const description = getCodecDescription(videoMp4File, videoTrack.id);
+      const description: Uint8Array | undefined = getCodecDescription(videoMp4File, videoTrack.id);
       const config: VideoDecoderConfig = {
         codec: videoTrack.codec,
         codedWidth: videoTrack.video?.width || 640,
@@ -169,7 +184,7 @@ function createDashDecoder(
     for (const sample of samples) {
       if (signal?.aborted || !sample.data) break;
 
-      const chunk = new EncodedVideoChunk({
+      const chunk: EncodedVideoChunk = new EncodedVideoChunk({
         type: sample.is_sync ? 'key' : 'delta',
         timestamp: (sample.cts * 1000000) / sample.timescale,
         duration: (sample.duration * 1000000) / sample.timescale,
@@ -192,12 +207,12 @@ function createDashDecoder(
       audioTrackId = audioTrack.id;
 
       // Get codec string - mp4a.40.2 for AAC-LC
-      const codec = audioTrack.codec || 'mp4a.40.2';
-      const sampleRate = audioTrack.audio?.sample_rate || 48000;
-      const numberOfChannels = audioTrack.audio?.channel_count || 2;
+      const codec: string = audioTrack.codec || 'mp4a.40.2';
+      const sampleRate: number = audioTrack.audio?.sample_rate || 48000;
+      const numberOfChannels: number = audioTrack.audio?.channel_count || 2;
 
       // Get audio codec description (esds box for AAC)
-      const description = getAudioCodecDescription(audioMp4File, audioTrack.id);
+      const description: Uint8Array | undefined = getAudioCodecDescription(audioMp4File, audioTrack.id);
 
       const config: AudioDecoderConfig = {
         codec,
@@ -208,7 +223,7 @@ function createDashDecoder(
 
       // Check if this configuration is supported
       try {
-        const support = await AudioDecoder.isConfigSupported(config);
+        const support: AudioDecoderSupport = await AudioDecoder.isConfigSupported(config);
         if (!support.supported) {
           // eslint-disable-next-line no-console
           console.warn(`[${sourceId}] Audio decoder config not supported (${codec}), skipping audio`);
@@ -241,7 +256,7 @@ function createDashDecoder(
     for (const sample of samples) {
       if (signal?.aborted || !sample.data || !audioDecoder || audioDecoder.state !== 'configured') break;
 
-      const chunk = new EncodedAudioChunk({
+      const chunk: EncodedAudioChunk = new EncodedAudioChunk({
         type: sample.is_sync ? 'key' : 'delta',
         timestamp: (sample.cts * 1000000) / sample.timescale,
         duration: (sample.duration * 1000000) / sample.timescale,
@@ -254,12 +269,18 @@ function createDashDecoder(
 
   const feedData = (data: Uint8Array, type: 'video' | 'audio'): void => {
     if (type === 'video') {
-      const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as any;
+      const buffer: MP4BoxBuffer = data.buffer.slice(
+        data.byteOffset,
+        data.byteOffset + data.byteLength
+      ) as MP4BoxBuffer;
       buffer.fileStart = videoFileOffset;
       videoFileOffset += data.byteLength;
       videoMp4File.appendBuffer(buffer);
     } else {
-      const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as any;
+      const buffer: MP4BoxBuffer = data.buffer.slice(
+        data.byteOffset,
+        data.byteOffset + data.byteLength
+      ) as MP4BoxBuffer;
       buffer.fileStart = audioFileOffset;
       audioFileOffset += data.byteLength;
       audioMp4File.appendBuffer(buffer);
@@ -274,11 +295,18 @@ function createDashDecoder(
     videoDecoder.close();
     audioDecoder?.close();
     audioEncoder?.close();
-    frames.forEach(f => f.close());
+    frames.forEach((f: VideoFrame) => f.close());
     frames.length = 0;
+    hasEnded = true;
   };
 
-  return {frames, feedData, getFrame, destroy};
+  const isEnded = (): boolean => hasEnded;
+
+  const setEnded = (): void => {
+    hasEnded = true;
+  };
+
+  return {frames, feedData, getFrame, destroy, isEnded, setEnded};
 }
 
 /**
@@ -287,13 +315,13 @@ function createDashDecoder(
  * AudioSpecificConfig is typically 2-5 bytes inside the esds box
  */
 function getAudioCodecDescription(mp4File: ISOFile, trackId: number): Uint8Array | undefined {
-  const trak = (mp4File as any).getTrackById(trackId);
+  const trak: any = mp4File.getTrackById(trackId);
   if (!trak) return undefined;
 
-  const entries = trak.mdia?.minf?.stbl?.stsd?.entries;
+  const entries: any = trak.mdia?.minf?.stbl?.stsd?.entries;
   if (!entries || entries.length === 0) return undefined;
 
-  const entry = entries[0];
+  const entry: any = entries[0];
 
   // For AAC, we need the AudioSpecificConfig from the esds box
   if (entry.esds) {
@@ -302,7 +330,7 @@ function getAudioCodecDescription(mp4File: ISOFile, trackId: number): Uint8Array
     // Path: esds -> ES_Descriptor -> DecoderConfigDescriptor -> DecoderSpecificInfo
 
     // Try to get decoderSpecificInfo directly if mp4box parsed it
-    const esds = entry.esds;
+    const esds: any = entry.esds;
     if (esds.esd?.descs) {
       // Look for DecoderSpecificInfo (tag 0x05)
       for (const desc of esds.esd.descs) {
@@ -319,14 +347,13 @@ function getAudioCodecDescription(mp4File: ISOFile, trackId: number): Uint8Array
     }
 
     // Fallback: serialize the full esds and extract AudioSpecificConfig manually
-    const DS = DataStream as any;
-    const stream = new DS(undefined, 0, DS.BIG_ENDIAN);
+    const stream: DataStream = new DataStream(undefined, 0, Endianness.BIG_ENDIAN);
     entry.esds.write(stream);
-    const esdsData = new Uint8Array(stream.buffer);
+    const esdsData: Uint8Array = new Uint8Array(stream.buffer);
 
     // Parse esds to find AudioSpecificConfig
     // Skip box header (8 bytes) and look for tag 0x05
-    const audioSpecificConfig = extractAudioSpecificConfig(esdsData);
+    const audioSpecificConfig: Uint8Array | undefined = extractAudioSpecificConfig(esdsData);
     if (audioSpecificConfig) {
       return audioSpecificConfig;
     }
@@ -345,16 +372,16 @@ function getAudioCodecDescription(mp4File: ISOFile, trackId: number): Uint8Array
 function extractAudioSpecificConfig(esdsData: Uint8Array): Uint8Array | undefined {
   // Skip box header (8 bytes: 4 size + 4 type 'esds')
   // Then skip version (1) and flags (3)
-  let offset = 8 + 4;
+  let offset: number = 8 + 4;
 
   while (offset < esdsData.length) {
-    const tag = esdsData[offset++];
+    const tag: number = esdsData[offset++];
     if (offset >= esdsData.length) break;
 
     // Parse length (variable length encoding)
-    let length = 0;
-    for (let i = 0; i < 4; i++) {
-      const byte = esdsData[offset++];
+    let length: number = 0;
+    for (let i: number = 0; i < 4; i++) {
+      const byte: number = esdsData[offset++];
       length = (length << 7) | (byte & 0x7f);
       if ((byte & 0x80) === 0) break;
     }
@@ -385,19 +412,38 @@ function extractAudioSpecificConfig(esdsData: Uint8Array): Uint8Array | undefine
 
 /**
  * Start fetching DASH segments and feeding them to decoder
+ * MSE player controls fetching via waitUntilBufferNeeded
  */
-async function startDashFetching(mpdUrl: string, decoder: DashDecoder, signal?: AbortSignal): Promise<void> {
+async function startDashFetching(
+  mpdUrl: string,
+  decoder: DashDecoder,
+  signal?: AbortSignal,
+  waitUntilBufferNeeded?: () => Promise<void>
+): Promise<void> {
   for await (const chunk of generateDash({mpdUrl, signal})) {
+    if (signal?.aborted) break;
+
+    // MSE player controls fetching - wait until buffer needs more data
+    if (waitUntilBufferNeeded) {
+      // eslint-disable-next-line no-await-in-loop
+      await waitUntilBufferNeeded();
+    }
+
     if (signal?.aborted) break;
     decoder.feedData(chunk.data, chunk.type);
   }
+
+  // Mark decoder as ended when all segments have been fetched
+  decoder.setEnded();
+  // eslint-disable-next-line no-console
+  console.log(`[DASH] Finished fetching all segments for ${mpdUrl}`);
 }
 
 /**
  * Generator that yields composited VideoFrames from two DASH streams
  */
 async function* generate(options: MergeDashOptions = {}): AsyncGenerator<VideoFrame> {
-  const {signal, onSwap, onAudioChunk} = options;
+  const {signal, onSwap, onAudioChunk, waitUntilBufferNeeded} = options;
 
   // eslint-disable-next-line no-console
   console.log('[MergeDash] Starting merge from two DASH streams');
@@ -490,15 +536,17 @@ async function* generate(options: MergeDashOptions = {}): AsyncGenerator<VideoFr
   const decoder2: DashDecoder = createDashDecoder('dash2', onAudioChunk, signal);
 
   // Start fetching DASH segments in background
-  startDashFetching(DASH_URL_1, decoder1, signal);
-  startDashFetching(DASH_URL_2, decoder2, signal);
+  // MSE player controls fetching via waitUntilBufferNeeded
+  startDashFetching(DASH_URL_1, decoder1, signal, waitUntilBufferNeeded);
+  startDashFetching(DASH_URL_2, decoder2, signal, waitUntilBufferNeeded);
 
   // Wait for initial frames
   // eslint-disable-next-line no-console
   console.log('[MergeDash] Waiting for initial frames...');
   while (decoder1.frames.length < 5 || decoder2.frames.length < 5) {
     if (signal?.aborted) return;
-    await new Promise(r => setTimeout(r, 100));
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((r: (value: unknown) => void): number => window.setTimeout(r, 100));
   }
   // eslint-disable-next-line no-console
   console.log('[MergeDash] Got initial frames, starting compositing');
@@ -518,23 +566,33 @@ async function* generate(options: MergeDashOptions = {}): AsyncGenerator<VideoFr
     while (!signal?.aborted) {
       const now: number = performance.now();
       if (now - lastFrameTime < frameInterval) {
-        await new Promise(r => setTimeout(r, 5));
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r: (value: unknown) => void): number => window.setTimeout(r, 5));
         continue;
       }
       lastFrameTime = now;
 
       // Get frames from decoders
-      const frame1 = decoder1.getFrame();
-      const frame2 = decoder2.getFrame();
+      const frame1: VideoFrame | undefined = decoder1.getFrame();
+      const frame2: VideoFrame | undefined = decoder2.getFrame();
 
       if (!frame1 && !frame2) {
-        await new Promise(r => setTimeout(r, 10));
+        // Check if both streams have ended and no more frames
+        const bothEnded: boolean = decoder1.isEnded() && decoder2.isEnded();
+        const noMoreFrames: boolean = decoder1.frames.length === 0 && decoder2.frames.length === 0;
+        if (bothEnded && noMoreFrames) {
+          // eslint-disable-next-line no-console
+          console.log('[MergeDash] Both streams ended, stopping playback');
+          break;
+        }
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r: (value: unknown) => void): number => window.setTimeout(r, 10));
         continue;
       }
 
       // Determine which frame is background and which is PiP
-      const bgFrame = swapped ? frame2 : frame1;
-      const pipFrame = swapped ? frame1 : frame2;
+      const bgFrame: VideoFrame | undefined = swapped ? frame2 : frame1;
+      const pipFrame: VideoFrame | undefined = swapped ? frame1 : frame2;
 
       // Draw background (full canvas)
       if (bgFrame) {

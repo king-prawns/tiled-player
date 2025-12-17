@@ -61,6 +61,17 @@ class Encoder {
     await this.#encoder.flush();
   };
 
+  destroy = (): void => {
+    if (this.#encoder) {
+      try {
+        this.#encoder.close();
+      } catch {
+        // Ignore errors during close
+      }
+      this.#encoder = null;
+    }
+  };
+
   // Usually this function would be sending data chunks over the network or muxing them into a media container for storage.
   #handleChunk: EncodedVideoChunkOutputCallback = (
     chunk: EncodedVideoChunk,

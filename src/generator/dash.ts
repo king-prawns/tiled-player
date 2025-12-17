@@ -1,21 +1,23 @@
 import IEncodedChunk from '@interfaces/IEncodedChunk';
 import parseMPD, {DashChunk, DashSegment, ParsedDash} from '@parser/dash';
 
-// Sample DASH MPD URL (Big Buck Bunny - clear, no DRM)
-const DEFAULT_MPD_URL: string = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd';
-
 /**
  * Fetch a segment and return its data
  */
 async function fetchSegment(url: string): Promise<Uint8Array> {
   const response: Response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch segment: ${response.status} ${response.statusText}`);
+  }
+
   const buffer: ArrayBuffer = await response.arrayBuffer();
 
   return new Uint8Array(buffer);
 }
 
 export interface DashGeneratorOptions {
-  mpdUrl?: string;
+  mpdUrl: string;
   signal?: AbortSignal;
   preferOpus?: boolean;
   onVideoChunk?: (chunk: IEncodedChunk) => void;
@@ -26,8 +28,8 @@ export interface DashGeneratorOptions {
  * DASH Generator - fetches MPD manifest and yields video/audio chunks
  * Retrieves 10 video and 10 audio segments from a clear (non-DRM) DASH stream
  */
-async function* generateDash(options: DashGeneratorOptions = {}): AsyncGenerator<DashChunk> {
-  const mpdUrl: string = options.mpdUrl ?? DEFAULT_MPD_URL;
+async function* generateDash(options: DashGeneratorOptions): AsyncGenerator<DashChunk> {
+  const mpdUrl: string = options.mpdUrl;
 
   // eslint-disable-next-line no-console
   console.log('[DASH] Fetching MPD manifest:', mpdUrl);

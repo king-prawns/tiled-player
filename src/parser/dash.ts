@@ -111,15 +111,31 @@ async function parseMPD(mpdUrl: string, preferOpus: boolean = false): Promise<Pa
                 timestamp: ((t + i * d) / timescale) * 1_000_000,
                 duration: (d / timescale) * 1_000_000
               });
-              if (result.videoSegments.length >= 10) break;
             }
             time = t + (r + 1) * d;
-            if (result.videoSegments.length >= 10) return;
           });
         } else if (duration > 0) {
           // Duration-based mode (using $Number$)
+          // Get total duration from MPD to calculate segment count
+          const mediaPresentationDuration: string | null =
+            mpd.documentElement.getAttribute('mediaPresentationDuration');
+          let totalDurationSec: number = 600; // Default fallback: 10 minutes
+          if (mediaPresentationDuration) {
+            // Parse ISO 8601 duration
+            // Supports formats like "PT634.566S", "PT10M34.566S", "P0Y0M0DT0H3M30.000S"
+            const match: RegExpMatchArray | null = mediaPresentationDuration.match(
+              /P(?:\d+Y)?(?:\d+M)?(?:\d+D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/
+            );
+            if (match) {
+              const hours: number = parseFloat(match[1] || '0');
+              const minutes: number = parseFloat(match[2] || '0');
+              const seconds: number = parseFloat(match[3] || '0');
+              totalDurationSec = hours * 3600 + minutes * 60 + seconds;
+            }
+          }
           const segmentDurationSec: number = duration / timescale;
-          for (let num: number = startNumber; num < startNumber + 10; num++) {
+          const totalSegments: number = Math.ceil(totalDurationSec / segmentDurationSec);
+          for (let num: number = startNumber; num < startNumber + totalSegments; num++) {
             const segUrl: string =
               baseUrl +
               mediaTemplate.replace(/\$RepresentationID\$/g, repId).replace('$Number$', String(num));
@@ -172,15 +188,31 @@ async function parseMPD(mpdUrl: string, preferOpus: boolean = false): Promise<Pa
                 timestamp: ((t + i * d) / timescale) * 1_000_000,
                 duration: (d / timescale) * 1_000_000
               });
-              if (result.audioSegments.length >= 10) break;
             }
             time = t + (r + 1) * d;
-            if (result.audioSegments.length >= 10) return;
           });
         } else if (duration > 0) {
           // Duration-based mode (using $Number$)
+          // Get total duration from MPD to calculate segment count
+          const mediaPresentationDuration: string | null =
+            mpd.documentElement.getAttribute('mediaPresentationDuration');
+          let totalDurationSec: number = 600; // Default fallback: 10 minutes
+          if (mediaPresentationDuration) {
+            // Parse ISO 8601 duration
+            // Supports formats like "PT634.566S", "PT10M34.566S", "P0Y0M0DT0H3M30.000S"
+            const match: RegExpMatchArray | null = mediaPresentationDuration.match(
+              /P(?:\d+Y)?(?:\d+M)?(?:\d+D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/
+            );
+            if (match) {
+              const hours: number = parseFloat(match[1] || '0');
+              const minutes: number = parseFloat(match[2] || '0');
+              const seconds: number = parseFloat(match[3] || '0');
+              totalDurationSec = hours * 3600 + minutes * 60 + seconds;
+            }
+          }
           const segmentDurationSec: number = duration / timescale;
-          for (let num: number = startNumber; num < startNumber + 10; num++) {
+          const totalSegments: number = Math.ceil(totalDurationSec / segmentDurationSec);
+          for (let num: number = startNumber; num < startNumber + totalSegments; num++) {
             const segUrl: string =
               baseUrl +
               mediaTemplate.replace(/\$RepresentationID\$/g, repId).replace('$Number$', String(num));
