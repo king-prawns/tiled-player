@@ -15,10 +15,10 @@
     "baseUrl": "../../",
     "paths": {
       "@generator/*": ["./src/generator/*"],
-      "@decoder/*": ["./src/decoder/*"],
       "@encoder/*": ["./src/encoder/*"],
       "@interfaces/*": ["./src/interfaces/*"],
-      "@mse/*": ["./src/mse/*"]
+      "@mse/*": ["./src/mse/*"],
+      "@parser/*": ["./src/parser/*"]
     }
   },
   "include": ["../../src/**/*", "../../sandbox/**/*"]

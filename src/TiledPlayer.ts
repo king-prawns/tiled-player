@@ -5,7 +5,7 @@ import Encoder from '@encoder/encoder';
 import generateMergeDash, {AudioSourceId, MergeDashOptions} from '@generator/mergeDash';
 // import generateVideo from '@generator/video';
 import IEncodedChunk from '@interfaces/IEncodedChunk';
-import {MSEPlayer} from '@mse/index';
+import MSEPlayer from '@mse/MSEPlayer';
 
 class TiledPlayer {
   #abortController: AbortController | null = null;
