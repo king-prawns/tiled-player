@@ -24,9 +24,12 @@ const AUDIO_SAMPLE_RATE: number = 48000;
 class Decoder {
   #sourceId: AudioSourceId;
   #signal?: AbortSignal;
-  #onAudioChunk?: (chunk: IEncodedChunk, sourceId: AudioSourceId) => void;
 
+  // Video frames buffer (decoded)
   #frames: Array<VideoFrame> = [];
+  // Audio chunks buffer (encoded opus) - similar to video frames
+  #audioChunks: Array<IEncodedChunk> = [];
+
   #videoFileOffset: number = 0;
   #audioFileOffset: number = 0;
   #hasEnded: boolean = false;
@@ -40,14 +43,9 @@ class Decoder {
   #videoTrackId: number | null = null;
   #audioTrackId: number | null = null;
 
-  constructor(
-    sourceId: AudioSourceId,
-    onAudioChunk?: (chunk: IEncodedChunk, sourceId: AudioSourceId) => void,
-    signal?: AbortSignal
-  ) {
+  constructor(sourceId: AudioSourceId, signal?: AbortSignal) {
     this.#sourceId = sourceId;
     this.#signal = signal;
-    this.#onAudioChunk = onAudioChunk;
 
     // Video decoder
     this.#videoDecoder = new VideoDecoder({
@@ -61,39 +59,43 @@ class Decoder {
     });
 
     // Audio encoder (re-encode to Opus for WebM)
-    if (onAudioChunk) {
-      this.#audioEncoder = new AudioEncoder({
-        output: (chunk: EncodedAudioChunk): void => {
-          const data: Uint8Array = new Uint8Array(chunk.byteLength);
-          chunk.copyTo(data);
-          this.#onAudioChunk?.({data, timestamp: chunk.timestamp, key: chunk.type === 'key'}, this.#sourceId);
-        },
-        error: (e: DOMException): void => {
-          // eslint-disable-next-line no-console
-          console.error(`[${sourceId}] AudioEncoder error:`, e);
-        }
-      });
-      this.#audioEncoder.configure({
-        codec: 'opus',
-        sampleRate: AUDIO_SAMPLE_RATE,
-        numberOfChannels: 2,
-        bitrate: 128000
-      });
+    this.#audioEncoder = new AudioEncoder({
+      output: (chunk: EncodedAudioChunk): void => {
+        const data: Uint8Array = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(data);
+        // Push to internal buffer instead of calling callback
+        this.#audioChunks.push({
+          data,
+          timestamp: chunk.timestamp,
+          key: chunk.type === 'key'
+        });
+      },
+      error: (e: DOMException): void => {
+        // eslint-disable-next-line no-console
+        console.error(`[${sourceId}] AudioEncoder error:`, e);
+      }
+    });
 
-      // Audio decoder
-      this.#audioDecoder = new AudioDecoder({
-        output: (audioData: AudioData): void => {
-          if (this.#audioEncoder && this.#audioEncoder.state === 'configured') {
-            this.#audioEncoder.encode(audioData);
-          }
-          audioData.close();
-        },
-        error: (e: DOMException): void => {
-          // eslint-disable-next-line no-console
-          console.error(`[${sourceId}] AudioDecoder error:`, e);
+    this.#audioEncoder.configure({
+      codec: 'opus',
+      sampleRate: AUDIO_SAMPLE_RATE,
+      numberOfChannels: 2,
+      bitrate: 128000
+    });
+
+    // Audio decoder
+    this.#audioDecoder = new AudioDecoder({
+      output: (audioData: AudioData): void => {
+        if (this.#audioEncoder && this.#audioEncoder.state === 'configured') {
+          this.#audioEncoder.encode(audioData);
         }
-      });
-    }
+        audioData.close();
+      },
+      error: (e: DOMException): void => {
+        // eslint-disable-next-line no-console
+        console.error(`[${sourceId}] AudioDecoder error:`, e);
+      }
+    });
 
     // MP4 demuxers
     this.#videoMp4File = createFile();
@@ -103,11 +105,30 @@ class Decoder {
     this.#setupAudioMp4Callbacks();
   }
 
+  get sourceId(): AudioSourceId {
+    return this.#sourceId;
+  }
+
   get frames(): Array<VideoFrame> {
     return this.#frames;
   }
 
+  get audioChunks(): Array<IEncodedChunk> {
+    return this.#audioChunks;
+  }
+
   getFrame = (): VideoFrame | undefined => this.#frames.shift();
+
+  // Pull audio chunk from buffer (similar to getFrame for video)
+  getAudioChunk = (): IEncodedChunk | undefined => this.#audioChunks.shift();
+
+  // Get all available audio chunks and clear buffer
+  drainAudioChunks = (): Array<IEncodedChunk> => {
+    const chunks: Array<IEncodedChunk> = [...this.#audioChunks];
+    this.#audioChunks.length = 0;
+
+    return chunks;
+  };
 
   isEnded = (): boolean => this.#hasEnded;
 

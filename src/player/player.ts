@@ -23,7 +23,6 @@ class Player {
   #audioPendingChunks: Uint8Array[] = [];
   #isVideoAppending: boolean = false;
   #isAudioAppending: boolean = false;
-  #initialized: boolean = false;
 
   // Audio source management
   #activeAudioSource: AudioSourceId = 'dash1';
@@ -130,7 +129,6 @@ class Player {
     this.#createVideoMuxer();
     this.#createAudioMuxer();
 
-    this.#initialized = true;
     // eslint-disable-next-line no-console
     console.log('[Player] Initialized with video:', videoMimeType, 'audio:', audioMimeType);
   };
@@ -139,7 +137,7 @@ class Player {
    * Append an encoded video chunk
    */
   appendVideoChunk = (chunk: IEncodedChunk): void => {
-    if (this.#disposed || !this.#initialized || !this.#videoMuxer) {
+    if (this.#disposed || !this.#videoMuxer) {
       return;
     }
 
@@ -163,45 +161,6 @@ class Player {
         `[Player] Video chunk #${this.#videoChunkCount}, ts: ${chunk.timestamp}, pending: ${this.#videoPendingChunks.length}`
       );
     }
-  };
-
-  /**
-   * Append an encoded audio chunk - buffers ALL sources, only appends active
-   */
-  appendAudioChunk = (chunk: IEncodedChunk, sourceId: AudioSourceId): void => {
-    if (this.#disposed || !this.#initialized || !this.#audioMuxer) {
-      return;
-    }
-
-    // ALWAYS store chunk in the source's buffer (even if not active)
-    const buffer: Array<IEncodedChunk> | undefined = this.#audioBuffers.get(sourceId);
-    if (buffer) {
-      buffer.push(chunk);
-      // Keep only last 60 seconds of audio (3000 chunks at 20ms each)
-      while (buffer.length > 3000) {
-        buffer.shift();
-      }
-    }
-
-    // Only append to muxer if this is the active audio source
-    if (sourceId !== this.#activeAudioSource) {
-      return;
-    }
-
-    // Use CONTINUOUS timestamps - always increment from last appended
-    const adjustedTimestamp: number = this.#lastAppendedAudioTimestamp;
-    this.#lastAppendedAudioTimestamp += this.#audioChunkDurationUs;
-
-    // Create a real EncodedAudioChunk from our data
-    const encodedChunk: EncodedAudioChunk = new EncodedAudioChunk({
-      type: 'key', // Audio chunks are always key frames
-      timestamp: adjustedTimestamp,
-      duration: this.#audioChunkDurationUs,
-      data: chunk.data
-    });
-
-    // Add audio chunk to muxer
-    this.#audioMuxer.addAudioChunk(encodedChunk, undefined, adjustedTimestamp);
   };
 
   /**
@@ -320,20 +279,16 @@ class Player {
       this.appendVideoChunk(chunk);
     });
 
-    // Create DASH stream managers
+    // Create DASH stream managers (audio pulled directly from decoder buffers)
     this.#stream1 = new StreamManager({
       mpdUrl: mpdUrl1,
       sourceId: 'dash1',
-      onAudioChunk: (chunk: IEncodedChunk, sourceId: AudioSourceId): void =>
-        this.appendAudioChunk(chunk, sourceId),
       signal
     });
 
     this.#stream2 = new StreamManager({
       mpdUrl: mpdUrl2,
       sourceId: 'dash2',
-      onAudioChunk: (chunk: IEncodedChunk, sourceId: AudioSourceId): void =>
-        this.appendAudioChunk(chunk, sourceId),
       signal
     });
 
@@ -523,6 +478,9 @@ class Player {
       // Check buffer and fetch more if needed
       this.#maintainBuffer();
 
+      // Pull audio chunks from both decoders and buffer them
+      this.#pullAudioChunks();
+
       // Get frames from decoders
       const frame1: VideoFrame | undefined = this.#stream1.decoder.getFrame();
       const frame2: VideoFrame | undefined = this.#stream2.decoder.getFrame();
@@ -615,6 +573,65 @@ class Player {
         this.#stream2.fetchNextChunk();
       }
     }
+  };
+
+  /**
+   * Pull audio chunks from decoder buffers and process them
+   * This is called every frame to collect new audio data
+   */
+  #pullAudioChunks = (): void => {
+    if (!this.#stream1 || !this.#stream2) return;
+
+    // Pull all available audio chunks from stream1 (dash1)
+    const chunks1: Array<IEncodedChunk> = this.#stream1.decoder.drainAudioChunks();
+    for (const chunk of chunks1) {
+      this.#bufferAudioChunk(chunk, 'dash1');
+    }
+
+    // Pull all available audio chunks from stream2 (dash2)
+    const chunks2: Array<IEncodedChunk> = this.#stream2.decoder.drainAudioChunks();
+    for (const chunk of chunks2) {
+      this.#bufferAudioChunk(chunk, 'dash2');
+    }
+  };
+
+  /**
+   * Buffer an audio chunk and append to muxer if from active source
+   */
+  #bufferAudioChunk = (chunk: IEncodedChunk, sourceId: AudioSourceId): void => {
+    if (this.#disposed || !this.#audioMuxer) {
+      return;
+    }
+
+    // ALWAYS store chunk in the source's buffer (even if not active)
+    const buffer: Array<IEncodedChunk> | undefined = this.#audioBuffers.get(sourceId);
+    if (buffer) {
+      buffer.push(chunk);
+      // Keep only last 60 seconds of audio (3000 chunks at 20ms each)
+      while (buffer.length > 3000) {
+        buffer.shift();
+      }
+    }
+
+    // Only append to muxer if this is the active audio source
+    if (sourceId !== this.#activeAudioSource) {
+      return;
+    }
+
+    // Use CONTINUOUS timestamps - always increment from last appended
+    const adjustedTimestamp: number = this.#lastAppendedAudioTimestamp;
+    this.#lastAppendedAudioTimestamp += this.#audioChunkDurationUs;
+
+    // Create a real EncodedAudioChunk from our data
+    const encodedChunk: EncodedAudioChunk = new EncodedAudioChunk({
+      type: 'key', // Audio chunks are always key frames
+      timestamp: adjustedTimestamp,
+      duration: this.#audioChunkDurationUs,
+      data: chunk.data
+    });
+
+    // Add audio chunk to muxer
+    this.#audioMuxer.addAudioChunk(encodedChunk, undefined, adjustedTimestamp);
   };
 
   /**

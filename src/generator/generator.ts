@@ -1,12 +1,8 @@
-import IEncodedChunk from '@interfaces/IEncodedChunk';
 import parseMPD, {DashSegment, ParsedDash} from '@parser/dash';
 
 interface GeneratorOptions {
   mpdUrl: string;
   signal?: AbortSignal;
-  preferOpus?: boolean;
-  onVideoChunk?: (chunk: IEncodedChunk) => void;
-  onAudioChunk?: (chunk: IEncodedChunk) => void;
 }
 
 export interface Chunk {
@@ -40,7 +36,7 @@ async function* generate(options: GeneratorOptions): AsyncGenerator<Chunk> {
   // eslint-disable-next-line no-console
   console.log('[Generator] Fetching MPD manifest:', mpdUrl);
 
-  const parsed: ParsedDash = await parseMPD(mpdUrl, options.preferOpus);
+  const parsed: ParsedDash = await parseMPD(mpdUrl);
   const {videoSegments, audioSegments, videoInitUrl, audioInitUrl, audioCodec} = parsed;
 
   // eslint-disable-next-line no-console
@@ -87,15 +83,6 @@ async function* generate(options: GeneratorOptions): AsyncGenerator<Chunk> {
         isInit: false
       };
       yield chunk;
-
-      // Call callback if provided
-      if (options.onVideoChunk) {
-        options.onVideoChunk({
-          timestamp: seg.timestamp,
-          key: i === 0, // First segment is keyframe
-          data
-        });
-      }
     }
 
     // Fetch audio segment
@@ -113,15 +100,6 @@ async function* generate(options: GeneratorOptions): AsyncGenerator<Chunk> {
         isInit: false
       };
       yield chunk;
-
-      // Call callback if provided
-      if (options.onAudioChunk) {
-        options.onAudioChunk({
-          timestamp: seg.timestamp,
-          key: i === 0, // First segment is keyframe
-          data
-        });
-      }
     }
   }
 

@@ -1,11 +1,9 @@
 import Decoder, {type AudioSourceId} from '@decoder/decoder';
 import generate from '@generator/generator';
-import IEncodedChunk from '@interfaces/IEncodedChunk';
 
 interface StreamConfig {
   mpdUrl: string;
   sourceId: AudioSourceId;
-  onAudioChunk?: (chunk: IEncodedChunk, sourceId: AudioSourceId) => void;
   signal?: AbortSignal;
 }
 
@@ -22,7 +20,7 @@ class StreamManager {
 
   constructor(config: StreamConfig) {
     this.#config = config;
-    this.#decoder = new Decoder(config.sourceId, config.onAudioChunk, config.signal);
+    this.#decoder = new Decoder(config.sourceId, config.signal);
   }
 
   get decoder(): Decoder {
@@ -46,7 +44,7 @@ class StreamManager {
   /**
    * Fetch next chunk from DASH stream
    * Returns true if more data is available, false if stream ended
-   * MSEPlayer calls this when buffer needs more data
+   * Player calls this when buffer needs more data
    */
   fetchNextChunk = async (): Promise<boolean> => {
     if (this.#isEnded || !this.#generator || this.#config.signal?.aborted) {

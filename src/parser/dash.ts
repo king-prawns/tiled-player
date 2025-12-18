@@ -21,7 +21,7 @@ export interface ParsedDash {
  * Supports both SegmentTemplate (live/chunked) and SegmentBase (on-demand)
  * Prefers Opus audio over AAC when available
  */
-async function parseMPD(mpdUrl: string, preferOpus: boolean = false): Promise<ParsedDash> {
+async function parseMPD(mpdUrl: string): Promise<ParsedDash> {
   const response: Response = await fetch(mpdUrl);
   const mpdText: string = await response.text();
   const parser: DOMParser = new DOMParser();
@@ -34,22 +34,8 @@ async function parseMPD(mpdUrl: string, preferOpus: boolean = false): Promise<Pa
     'AdaptationSet[mimeType="video/mp4"], AdaptationSet[contentType="video"]'
   );
 
-  // Find audio AdaptationSet - prefer Opus if requested
+  // Find audio AdaptationSet
   let audioAdaptation: Element | null = null;
-  if (preferOpus) {
-    // Try to find Opus audio first
-    const allAudioAdaptations: Array<Element> = Array.from(
-      mpd.querySelectorAll('AdaptationSet[contentType="audio"], AdaptationSet[mimeType^="audio"]')
-    );
-    for (const adapt of allAudioAdaptations) {
-      const rep: Element | null = adapt.querySelector('Representation');
-      const codec: string = rep?.getAttribute('codecs') || '';
-      if (codec.toLowerCase().includes('opus')) {
-        audioAdaptation = adapt;
-        break;
-      }
-    }
-  }
   // Fallback to any audio
   if (!audioAdaptation) {
     audioAdaptation = mpd.querySelector(
