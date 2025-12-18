@@ -1,5 +1,5 @@
 import Decoder, {type AudioSourceId} from '@decoder/decoder';
-import generate from '@generator/dash';
+import generate from '@generator/generator';
 import IEncodedChunk from '@interfaces/IEncodedChunk';
 
 interface StreamConfig {

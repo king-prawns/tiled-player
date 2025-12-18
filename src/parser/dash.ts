@@ -5,13 +5,6 @@ export interface DashSegment {
   byteRange?: string; // For SegmentBase (on-demand)
 }
 
-export interface DashChunk {
-  type: 'video' | 'audio';
-  data: Uint8Array;
-  timestamp: number;
-  isInit: boolean;
-}
-
 export interface ParsedDash {
   videoSegments: Array<DashSegment>;
   audioSegments: Array<DashSegment>;

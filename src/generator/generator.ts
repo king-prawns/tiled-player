@@ -1,13 +1,21 @@
 import IEncodedChunk from '@interfaces/IEncodedChunk';
-import parseMPD, {DashChunk, DashSegment, ParsedDash} from '@parser/dash';
+import parseMPD, {DashSegment, ParsedDash} from '@parser/dash';
 
-export interface DashGeneratorOptions {
+interface GeneratorOptions {
   mpdUrl: string;
   signal?: AbortSignal;
   preferOpus?: boolean;
   onVideoChunk?: (chunk: IEncodedChunk) => void;
   onAudioChunk?: (chunk: IEncodedChunk) => void;
 }
+
+export interface Chunk {
+  type: 'video' | 'audio';
+  data: Uint8Array;
+  timestamp: number;
+  isInit: boolean;
+}
+
 /**
  * Fetch a segment and return its data
  */
@@ -24,27 +32,28 @@ async function fetchSegment(url: string): Promise<Uint8Array> {
 }
 
 /**
- * DASH Generator - fetches MPD manifest and yields video/audio chunks
- * Retrieves 10 video and 10 audio segments from a clear (non-DRM) DASH stream
+ * Generator - fetches MPD manifest and yields video/audio chunks
  */
-async function* generateDash(options: DashGeneratorOptions): AsyncGenerator<DashChunk> {
+async function* generate(options: GeneratorOptions): AsyncGenerator<Chunk> {
   const mpdUrl: string = options.mpdUrl;
 
   // eslint-disable-next-line no-console
-  console.log('[DASH] Fetching MPD manifest:', mpdUrl);
+  console.log('[Generator] Fetching MPD manifest:', mpdUrl);
 
   const parsed: ParsedDash = await parseMPD(mpdUrl, options.preferOpus);
   const {videoSegments, audioSegments, videoInitUrl, audioInitUrl, audioCodec} = parsed;
 
   // eslint-disable-next-line no-console
-  console.log(`[DASH] Found ${videoSegments.length} video segments, ${audioSegments.length} audio segments`);
+  console.log(
+    `[Generator] Found ${videoSegments.length} video segments, ${audioSegments.length} audio segments`
+  );
   // eslint-disable-next-line no-console
-  if (audioCodec) console.log(`[DASH] Audio codec: ${audioCodec}`);
+  if (audioCodec) console.log(`[Generator] Audio codec: ${audioCodec}`);
 
   // Fetch and yield video init segment
   if (videoInitUrl) {
     // eslint-disable-next-line no-console
-    console.log('[DASH] Fetching video init segment:', videoInitUrl);
+    console.log('[Generator] Fetching video init segment:', videoInitUrl);
     const initData: Uint8Array = await fetchSegment(videoInitUrl);
     yield {type: 'video', data: initData, timestamp: 0, isInit: true};
   }
@@ -52,7 +61,7 @@ async function* generateDash(options: DashGeneratorOptions): AsyncGenerator<Dash
   // Fetch and yield audio init segment
   if (audioInitUrl) {
     // eslint-disable-next-line no-console
-    console.log('[DASH] Fetching audio init segment:', audioInitUrl);
+    console.log('[Generator] Fetching audio init segment:', audioInitUrl);
     const initData: Uint8Array = await fetchSegment(audioInitUrl);
     yield {type: 'audio', data: initData, timestamp: 0, isInit: true};
   }
@@ -67,11 +76,11 @@ async function* generateDash(options: DashGeneratorOptions): AsyncGenerator<Dash
     if (i < videoSegments.length) {
       const seg: DashSegment = videoSegments[i];
       // eslint-disable-next-line no-console
-      console.log(`[DASH] Fetching video segment ${i + 1}/${videoSegments.length}`);
+      console.log(`[Generator] Fetching video segment ${i + 1}/${videoSegments.length}`);
       // eslint-disable-next-line no-await-in-loop
       const data: Uint8Array = await fetchSegment(seg.url);
 
-      const chunk: DashChunk = {
+      const chunk: Chunk = {
         type: 'video',
         data,
         timestamp: seg.timestamp,
@@ -93,11 +102,11 @@ async function* generateDash(options: DashGeneratorOptions): AsyncGenerator<Dash
     if (i < audioSegments.length) {
       const seg: DashSegment = audioSegments[i];
       // eslint-disable-next-line no-console
-      console.log(`[DASH] Fetching audio segment ${i + 1}/${audioSegments.length}`);
+      console.log(`[Generator] Fetching audio segment ${i + 1}/${audioSegments.length}`);
       // eslint-disable-next-line no-await-in-loop
       const data: Uint8Array = await fetchSegment(seg.url);
 
-      const chunk: DashChunk = {
+      const chunk: Chunk = {
         type: 'audio',
         data,
         timestamp: seg.timestamp,
@@ -117,7 +126,7 @@ async function* generateDash(options: DashGeneratorOptions): AsyncGenerator<Dash
   }
 
   // eslint-disable-next-line no-console
-  console.log('[DASH] Finished fetching all segments');
+  console.log('[Generator] Finished fetching all segments');
 }
 
-export default generateDash;
+export default generate;
