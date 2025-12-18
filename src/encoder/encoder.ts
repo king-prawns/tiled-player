@@ -1,30 +1,81 @@
 import IEncodedChunk from '@interfaces/IEncodedChunk';
 
+type EncoderType = 'video' | 'audio';
+
+interface VideoEncoderOptions {
+  width?: number;
+  height?: number;
+  bitrate?: number;
+  framerate?: number;
+}
+
+interface AudioEncoderOptions {
+  sampleRate?: number;
+  numberOfChannels?: number;
+  bitrate?: number;
+}
+
 class Encoder {
-  #encoder: VideoEncoder | null = null;
+  #encoder: VideoEncoder | AudioEncoder | null = null;
+  #type: EncoderType;
 
   #onChunkCallback: ((chunk: IEncodedChunk) => void) | null = null;
   #frameCounter: number = 0;
+
+  constructor(type: EncoderType = 'video') {
+    this.#type = type;
+  }
 
   onChunk = (callback: (chunk: IEncodedChunk) => void): void => {
     this.#onChunkCallback = callback;
   };
 
-  init = async (): Promise<void> => {
+  init = async (options?: VideoEncoderOptions | AudioEncoderOptions): Promise<void> => {
+    if (this.#type === 'video') {
+      await this.#initVideo(options as VideoEncoderOptions);
+    } else {
+      await this.#initAudio(options as AudioEncoderOptions);
+    }
+  };
+
+  encode = (frame: VideoFrame | AudioData): void => {
+    if (this.#type === 'video') {
+      this.#encodeVideo(frame as VideoFrame);
+    } else {
+      this.#encodeAudio(frame as AudioData);
+    }
+  };
+
+  flush = async (): Promise<void> => {
+    await this.#encoder?.flush();
+  };
+
+  destroy = (): void => {
+    if (this.#encoder) {
+      try {
+        this.#encoder.close();
+      } catch {
+        // Ignore
+      }
+      this.#encoder = null;
+    }
+  };
+
+  #initVideo = async (options?: VideoEncoderOptions): Promise<void> => {
     const init: VideoEncoderInit = {
       output: this.#handleChunk,
       error: (e: DOMException) => {
         // eslint-disable-next-line no-console
-        console.log('Encoder error: ', e.message);
+        console.error('[Encoder:video] Error:', e.message);
       }
     };
 
     const config: VideoEncoderConfig = {
       codec: 'vp8',
-      width: 640,
-      height: 480,
-      bitrate: 2_000_000, // 2 Mbps
-      framerate: 30
+      width: options?.width ?? 640,
+      height: options?.height ?? 480,
+      bitrate: options?.bitrate ?? 2_000_000,
+      framerate: options?.framerate ?? 30
     };
 
     const {supported} = await VideoEncoder.isConfigSupported(config);
@@ -33,72 +84,73 @@ class Encoder {
       this.#encoder.configure(config);
     } else {
       // eslint-disable-next-line no-console
-      console.log('Configuration not supported', config);
+      console.error('[Encoder:video] Configuration not supported:', config);
     }
   };
 
-  encode = (videoFrame: VideoFrame): void => {
+  #initAudio = async (options?: AudioEncoderOptions): Promise<void> => {
+    const init: AudioEncoderInit = {
+      output: this.#handleChunk,
+      error: (e: DOMException) => {
+        // eslint-disable-next-line no-console
+        console.error('[Encoder:audio] Error:', e.message);
+      }
+    };
+
+    const config: AudioEncoderConfig = {
+      codec: 'opus',
+      sampleRate: options?.sampleRate ?? 48000,
+      numberOfChannels: options?.numberOfChannels ?? 2,
+      bitrate: options?.bitrate ?? 128000
+    };
+
+    const {supported} = await AudioEncoder.isConfigSupported(config);
+    if (supported) {
+      this.#encoder = new AudioEncoder(init);
+      this.#encoder.configure(config);
+    } else {
+      // eslint-disable-next-line no-console
+      console.error('[Encoder:audio] Configuration not supported:', config);
+    }
+  };
+
+  #encodeVideo = (videoFrame: VideoFrame): void => {
     if (!this.#encoder) return;
 
     if (this.#encoder.encodeQueueSize > 2) {
-      // Too many frames in flight, encoder is overwhelmed, let's drop this frame.
       // eslint-disable-next-line no-console
-      console.log('Dropping frame t: ', videoFrame.timestamp);
+      console.warn('[Encoder:video] Dropping frame, queue full');
       videoFrame.close();
     } else {
-      // First frame (0) must be a keyframe, then every 150 frames
       const keyFrame: boolean = this.#frameCounter % 150 === 0;
-      this.#encoder.encode(videoFrame, {keyFrame});
+      (this.#encoder as VideoEncoder).encode(videoFrame, {keyFrame});
       videoFrame.close();
       this.#frameCounter++;
     }
   };
 
-  // make sure that all pending encoding requests have been completed, you can call flush() and wait for its promise
-  flush = async (): Promise<void> => {
+  #encodeAudio = (audioData: AudioData): void => {
     if (!this.#encoder) return;
 
-    await this.#encoder.flush();
-  };
-
-  destroy = (): void => {
-    if (this.#encoder) {
-      try {
-        this.#encoder.close();
-      } catch {
-        // Ignore errors during close
-      }
-      this.#encoder = null;
-    }
-  };
-
-  #handleChunk: EncodedVideoChunkOutputCallback = (
-    chunk: EncodedVideoChunk,
-    metadata?: EncodedVideoChunkMetadata
-  ) => {
-    if (metadata && metadata.decoderConfig) {
-      // Decoder needs to be configured (or reconfigured) with new parameters
-      // when metadata has a new decoderConfig.
-      // Usually it happens in the beginning or when the encoder has a new
-      // codec specific binary configuration. (VideoDecoderConfig.description).
+    if (this.#encoder.encodeQueueSize > 10) {
       // eslint-disable-next-line no-console
-      console.log('Decoder config description: ', metadata.decoderConfig.description);
+      console.warn('[Encoder:audio] Dropping audio, queue full');
+      audioData.close();
+    } else {
+      (this.#encoder as AudioEncoder).encode(audioData);
+      audioData.close();
     }
+  };
 
-    // actual bytes of encoded data
+  #handleChunk: EncodedVideoChunkOutputCallback = (chunk: EncodedVideoChunk | EncodedAudioChunk) => {
     const chunkData: Uint8Array = new Uint8Array(chunk.byteLength);
     chunk.copyTo(chunkData);
 
-    const encodedChunk: IEncodedChunk = {
+    this.#onChunkCallback?.({
       timestamp: chunk.timestamp,
       key: chunk.type === 'key',
       data: chunkData
-    };
-
-    // eslint-disable-next-line no-console
-    console.log('Encoded chunk', encodedChunk);
-
-    this.#onChunkCallback?.(encodedChunk);
+    });
   };
 }
 

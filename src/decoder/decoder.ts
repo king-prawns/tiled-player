@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import IEncodedChunk from '@interfaces/IEncodedChunk';
 import {
   createFile,
   DataStream,
@@ -13,87 +12,53 @@ import {
   Endianness
 } from 'mp4box';
 
-export type AudioSourceId = 'dash1' | 'dash2';
-
-const AUDIO_SAMPLE_RATE: number = 48000;
-
 /**
  * Decoder - Decodes a single DASH stream (video + audio)
  * Uses mp4box.js for demuxing and WebCodecs for decoding
+ * Outputs decoded VideoFrame and AudioData
  */
 class Decoder {
-  #sourceId: AudioSourceId;
-  #signal?: AbortSignal;
+  #signal: AbortSignal;
 
   // Video frames buffer (decoded)
   #frames: Array<VideoFrame> = [];
-  // Audio chunks buffer (encoded opus) - similar to video frames
-  #audioChunks: Array<IEncodedChunk> = [];
+  // Audio data buffer (decoded) - symmetric with video frames
+  #audioFrames: Array<AudioData> = [];
 
   #videoFileOffset: number = 0;
   #audioFileOffset: number = 0;
-  #hasEnded: boolean = false;
 
   #videoDecoder: VideoDecoder;
-  #audioDecoder: AudioDecoder | null = null;
-  #audioEncoder: AudioEncoder | null = null;
+  #audioDecoder: AudioDecoder;
 
   #videoMp4File: ISOFile;
   #audioMp4File: ISOFile;
+
   #videoTrackId: number | null = null;
   #audioTrackId: number | null = null;
 
-  constructor(sourceId: AudioSourceId, signal?: AbortSignal) {
-    this.#sourceId = sourceId;
+  constructor(signal: AbortSignal) {
     this.#signal = signal;
 
-    // Video decoder
+    // Video decoder - outputs to #frames buffer
     this.#videoDecoder = new VideoDecoder({
       output: (frame: VideoFrame): void => {
         this.#frames.push(frame);
       },
       error: (e: DOMException): void => {
         // eslint-disable-next-line no-console
-        console.error(`[${sourceId}] VideoDecoder error:`, e);
+        console.error(`VideoDecoder error:`, e);
       }
     });
 
-    // Audio encoder (re-encode to Opus for WebM)
-    this.#audioEncoder = new AudioEncoder({
-      output: (chunk: EncodedAudioChunk): void => {
-        const data: Uint8Array = new Uint8Array(chunk.byteLength);
-        chunk.copyTo(data);
-        // Push to internal buffer instead of calling callback
-        this.#audioChunks.push({
-          data,
-          timestamp: chunk.timestamp,
-          key: chunk.type === 'key'
-        });
-      },
-      error: (e: DOMException): void => {
-        // eslint-disable-next-line no-console
-        console.error(`[${sourceId}] AudioEncoder error:`, e);
-      }
-    });
-
-    this.#audioEncoder.configure({
-      codec: 'opus',
-      sampleRate: AUDIO_SAMPLE_RATE,
-      numberOfChannels: 2,
-      bitrate: 128000
-    });
-
-    // Audio decoder
+    // Audio decoder - outputs to #audioFrames buffer (symmetric with video)
     this.#audioDecoder = new AudioDecoder({
       output: (audioData: AudioData): void => {
-        if (this.#audioEncoder && this.#audioEncoder.state === 'configured') {
-          this.#audioEncoder.encode(audioData);
-        }
-        audioData.close();
+        this.#audioFrames.push(audioData);
       },
       error: (e: DOMException): void => {
         // eslint-disable-next-line no-console
-        console.error(`[${sourceId}] AudioDecoder error:`, e);
+        console.error(`AudioDecoder error:`, e);
       }
     });
 
@@ -105,35 +70,19 @@ class Decoder {
     this.#setupAudioMp4Callbacks();
   }
 
-  get sourceId(): AudioSourceId {
-    return this.#sourceId;
-  }
-
   get frames(): Array<VideoFrame> {
     return this.#frames;
   }
 
-  get audioChunks(): Array<IEncodedChunk> {
-    return this.#audioChunks;
-  }
-
+  // Pull video frame from buffer
   getFrame = (): VideoFrame | undefined => this.#frames.shift();
 
-  // Pull audio chunk from buffer (similar to getFrame for video)
-  getAudioChunk = (): IEncodedChunk | undefined => this.#audioChunks.shift();
+  // Get all available audio data and clear buffer
+  drainAudioData = (): Array<AudioData> => {
+    const frames: Array<AudioData> = [...this.#audioFrames];
+    this.#audioFrames.length = 0;
 
-  // Get all available audio chunks and clear buffer
-  drainAudioChunks = (): Array<IEncodedChunk> => {
-    const chunks: Array<IEncodedChunk> = [...this.#audioChunks];
-    this.#audioChunks.length = 0;
-
-    return chunks;
-  };
-
-  isEnded = (): boolean => this.#hasEnded;
-
-  setEnded = (): void => {
-    this.#hasEnded = true;
+    return frames;
   };
 
   feedData = (data: Uint8Array, type: 'video' | 'audio'): void => {
@@ -161,16 +110,18 @@ class Decoder {
     this.#audioMp4File.flush();
     this.#videoDecoder.close();
     this.#audioDecoder?.close();
-    this.#audioEncoder?.close();
+    // Close all video frames
     this.#frames.forEach((f: VideoFrame) => f.close());
     this.#frames.length = 0;
-    this.#hasEnded = true;
+    // Close all audio data
+    this.#audioFrames.forEach((a: AudioData) => a.close());
+    this.#audioFrames.length = 0;
   };
 
   #setupVideoMp4Callbacks = (): void => {
     this.#videoMp4File.onReady = (info: Movie): void => {
       // eslint-disable-next-line no-console
-      console.log(`[${this.#sourceId}] Video MP4Box ready:`, info);
+      console.log(`Video MP4Box ready:`, info);
 
       const videoTrack: Track | undefined = info.videoTracks[0];
       if (videoTrack) {
@@ -180,6 +131,7 @@ class Decoder {
           this.#videoMp4File,
           videoTrack.id
         );
+
         const config: VideoDecoderConfig = {
           codec: videoTrack.codec,
           codedWidth: videoTrack.video?.width || 640,
@@ -188,7 +140,7 @@ class Decoder {
         };
 
         // eslint-disable-next-line no-console
-        console.log(`[${this.#sourceId}] Configuring video decoder:`, config);
+        console.log(`Configuring video decoder:`, config);
         this.#videoDecoder.configure(config);
 
         this.#videoMp4File.setExtractionOptions(videoTrack.id, null, {nbSamples: 50});
@@ -200,7 +152,7 @@ class Decoder {
       if (trackId !== this.#videoTrackId) return;
 
       for (const sample of samples) {
-        if (this.#signal?.aborted || !sample.data) break;
+        if (this.#signal.aborted || !sample.data) break;
 
         const chunk: EncodedVideoChunk = new EncodedVideoChunk({
           type: sample.is_sync ? 'key' : 'delta',
@@ -215,11 +167,9 @@ class Decoder {
   };
 
   #setupAudioMp4Callbacks = (): void => {
-    this.#audioMp4File.onReady = async (info: Movie): Promise<void> => {
-      if (!this.#audioDecoder) return;
-
+    this.#audioMp4File.onReady = (info: Movie): void => {
       // eslint-disable-next-line no-console
-      console.log(`[${this.#sourceId}] Audio MP4Box ready:`, info);
+      console.log(`Audio MP4Box ready:`, info);
 
       const audioTrack: Track | undefined = info.audioTracks[0];
       if (audioTrack) {
@@ -241,31 +191,12 @@ class Decoder {
           description
         };
 
-        try {
-          const support: AudioDecoderSupport = await AudioDecoder.isConfigSupported(config);
-          if (!support.supported) {
-            // eslint-disable-next-line no-console
-            console.warn(`[${this.#sourceId}] Audio decoder config not supported (${codec}), skipping audio`);
-            this.#audioDecoder?.close();
-            this.#audioDecoder = null;
-            this.#audioEncoder?.close();
+        // eslint-disable-next-line no-console
+        console.log(`Configuring audio decoder:`, config);
+        this.#audioDecoder.configure(config);
 
-            return;
-          }
-
-          // eslint-disable-next-line no-console
-          console.log(`[${this.#sourceId}] Configuring audio decoder:`, config);
-          this.#audioDecoder.configure(config);
-
-          this.#audioMp4File.setExtractionOptions(audioTrack.id, null, {nbSamples: 100});
-          this.#audioMp4File.start();
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.warn(`[${this.#sourceId}] Audio decoder configuration failed:`, e);
-          this.#audioDecoder?.close();
-          this.#audioDecoder = null;
-          this.#audioEncoder?.close();
-        }
+        this.#audioMp4File.setExtractionOptions(audioTrack.id, null, {nbSamples: 100});
+        this.#audioMp4File.start();
       }
     };
 
@@ -275,7 +206,7 @@ class Decoder {
 
       for (const sample of samples) {
         if (
-          this.#signal?.aborted ||
+          this.#signal.aborted ||
           !sample.data ||
           !this.#audioDecoder ||
           this.#audioDecoder.state !== 'configured'

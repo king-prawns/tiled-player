@@ -1,15 +1,14 @@
-import Decoder, {type AudioSourceId} from '@decoder/decoder';
+import Decoder from '@decoder/decoder';
 import generate from '@generator/generator';
 
 interface StreamConfig {
   mpdUrl: string;
-  sourceId: AudioSourceId;
-  signal?: AbortSignal;
+  signal: AbortSignal;
 }
 
 /**
  * StreamManager - Manages DASH segment fetching for a single stream
- * MSEPlayer controls when to fetch via fetchNextChunk()
+ * Player controls when to fetch via fetchNextChunk()
  */
 class StreamManager {
   #config: StreamConfig;
@@ -20,7 +19,7 @@ class StreamManager {
 
   constructor(config: StreamConfig) {
     this.#config = config;
-    this.#decoder = new Decoder(config.sourceId, config.signal);
+    this.#decoder = new Decoder(config.signal);
   }
 
   get decoder(): Decoder {
@@ -65,9 +64,8 @@ class StreamManager {
 
       if (result.done) {
         this.#isEnded = true;
-        this.#decoder.setEnded();
         // eslint-disable-next-line no-console
-        console.log(`[StreamManager] Stream ${this.#config.sourceId} ended`);
+        console.log(`[StreamManager] Stream "${this.#config.mpdUrl}" ended`);
 
         return false;
       }
@@ -82,21 +80,6 @@ class StreamManager {
     } finally {
       this.#isFetching = false;
     }
-  };
-
-  /**
-   * Fetch multiple chunks at once (for initial buffering)
-   */
-  fetchChunks = async (count: number): Promise<number> => {
-    let fetched: number = 0;
-    for (let i: number = 0; i < count; i++) {
-      // eslint-disable-next-line no-await-in-loop
-      const hasMore: boolean = await this.fetchNextChunk();
-      if (!hasMore) break;
-      fetched++;
-    }
-
-    return fetched;
   };
 
   destroy = (): void => {

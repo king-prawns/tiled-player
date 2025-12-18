@@ -1,8 +1,9 @@
-import {AudioSourceId} from '@decoder/decoder';
 import Encoder from '@encoder/encoder';
 import IEncodedChunk from '@interfaces/IEncodedChunk';
 import StreamManager from '@stream/streamManager';
 import {Muxer, StreamTarget} from 'webm-muxer';
+
+type AudioSourceId = 'source1' | 'source2';
 
 class Player {
   #videoElementId: string;
@@ -11,7 +12,6 @@ class Player {
   #audioSourceBuffer: SourceBuffer | null = null;
   #videoElement: HTMLVideoElement | null = null;
 
-  // Separate muxers for video and audio
   #videoMuxer: Muxer<StreamTarget> | null = null;
   #audioMuxer: Muxer<StreamTarget> | null = null;
   #width: number;
@@ -21,28 +21,24 @@ class Player {
   // Pending data queues for MSE (separate for video and audio)
   #videoPendingChunks: Uint8Array[] = [];
   #audioPendingChunks: Uint8Array[] = [];
-  #isVideoAppending: boolean = false;
-  #isAudioAppending: boolean = false;
 
   // Audio source management
-  #activeAudioSource: AudioSourceId = 'dash1';
-  // Track the last audio timestamp we appended (for continuous playback)
+  #activeAudioSource: AudioSourceId = 'source1';
   #lastAppendedAudioTimestamp: number = 0;
   // Audio chunk duration in microseconds (20ms for Opus)
   #audioChunkDurationUs: number = 20_000;
-  // Buffer audio from BOTH sources (key insight from Player2!)
-  #audioBuffers: Map<AudioSourceId, Array<IEncodedChunk>> = new Map([
-    ['dash1', []],
-    ['dash2', []]
+
+  #cachedAudioData: Map<AudioSourceId, Array<AudioData>> = new Map([
+    ['source1', []],
+    ['source2', []]
   ]);
 
-  #videoChunkCount: number = 0;
   #disposed: boolean = false;
 
-  // DASH stream management - MSE player is the orchestrator
   #stream1: StreamManager | null = null;
   #stream2: StreamManager | null = null;
-  #encoder: Encoder | null = null;
+  #videoEncoder: Encoder | null = null;
+  #audioEncoder: Encoder | null = null;
   #abortController: AbortController | null = null;
 
   // Compositor state
@@ -55,7 +51,8 @@ class Player {
   // Compositor constants
   static readonly MIN_PIP_SIZE: number = 80;
   static readonly RESIZE_HANDLE_SIZE: number = 15;
-  static readonly MAX_BUFFER_SEC: number = 30;
+  static readonly MAX_BUFFER_AHEAD: number = 30;
+  static readonly MAX_BUFFER_BEHIND: number = 10;
 
   constructor(videoElementId: string, width: number = 640, height: number = 480, sampleRate: number = 48000) {
     this.#videoElementId = videoElementId;
@@ -134,14 +131,123 @@ class Player {
   };
 
   /**
-   * Append an encoded video chunk
+   * Load and play two DASH streams with PiP compositor
    */
-  appendVideoChunk = (chunk: IEncodedChunk): void => {
+  load = async (mpdUrl1: string, mpdUrl2: string): Promise<void> => {
+    this.#abortController = new AbortController();
+    const signal: AbortSignal = this.#abortController.signal;
+
+    // Initialize PiP position
+    this.#pipX = this.#width - this.#width / 3 - 10;
+    this.#pipY = this.#height - this.#height / 3 - 10;
+    this.#pipWidth = this.#width / 3;
+    this.#pipHeight = this.#height / 3;
+
+    // Create video encoder (for composited frames)
+    this.#videoEncoder = new Encoder('video');
+    await this.#videoEncoder.init({width: this.#width, height: this.#height});
+    this.#videoEncoder.onChunk((chunk: IEncodedChunk) => {
+      this.#appendVideoChunk(chunk);
+    });
+
+    // Create audio encoder (re-encode decoded AudioData to Opus)
+    this.#audioEncoder = new Encoder('audio');
+    await this.#audioEncoder.init({sampleRate: this.#sampleRate});
+    this.#audioEncoder.onChunk((chunk: IEncodedChunk) => {
+      this.#appendAudioChunk(chunk);
+    });
+
+    // Create DASH stream managers (audio pulled directly from decoder buffers)
+    this.#stream1 = new StreamManager({
+      mpdUrl: mpdUrl1,
+      signal
+    });
+
+    this.#stream2 = new StreamManager({
+      mpdUrl: mpdUrl2,
+      signal
+    });
+
+    // Initialize streams (fetch manifests)
+    await Promise.all([this.#stream1.init(), this.#stream2.init()]);
+
+    // Setup mouse event handlers for PiP interaction
+    this.#setupPipInteraction();
+
+    // Start the main loop
+    await this.#runMainLoop();
+
+    // Cleanup
+    await this.#videoEncoder?.flush();
+  };
+
+  dispose = (): void => {
+    this.#disposed = true;
+
+    // Abort any ongoing fetches
+    this.#abortController?.abort();
+
+    // Destroy DASH stream managers
+    this.#stream1?.destroy();
+    this.#stream2?.destroy();
+    this.#stream1 = null;
+    this.#stream2 = null;
+
+    // Destroy encoders
+    this.#videoEncoder?.destroy();
+    this.#videoEncoder = null;
+    this.#audioEncoder?.destroy();
+    this.#audioEncoder = null;
+
+    // Close cached AudioData
+    for (const buffer of this.#cachedAudioData.values()) {
+      buffer.forEach((a: AudioData) => a.close());
+      buffer.length = 0;
+    }
+
+    // Finalize muxers
+    if (this.#videoMuxer) {
+      try {
+        this.#videoMuxer.finalize();
+      } catch {
+        // Ignore errors during finalize
+      }
+      this.#videoMuxer = null;
+    }
+    if (this.#audioMuxer) {
+      try {
+        this.#audioMuxer.finalize();
+      } catch {
+        // Ignore errors during finalize
+      }
+      this.#audioMuxer = null;
+    }
+
+    if (this.#videoSourceBuffer) {
+      this.#videoSourceBuffer.removeEventListener('updateend', this.#onVideoUpdateEnd);
+    }
+    if (this.#audioSourceBuffer) {
+      this.#audioSourceBuffer.removeEventListener('updateend', this.#onAudioUpdateEnd);
+    }
+    if (this.#mediaSource && this.#mediaSource.readyState === 'open') {
+      try {
+        this.#mediaSource.endOfStream();
+      } catch {
+        // Ignore
+      }
+    }
+    if (this.#videoElement) {
+      URL.revokeObjectURL(this.#videoElement.src);
+      this.#videoElement.src = '';
+    }
+    this.#videoPendingChunks = [];
+    this.#audioPendingChunks = [];
+  };
+
+  #appendVideoChunk = (chunk: IEncodedChunk): void => {
     if (this.#disposed || !this.#videoMuxer) {
       return;
     }
-
-    this.#videoChunkCount++;
 
     // Create a real EncodedVideoChunk from our data
     const encodedChunk: EncodedVideoChunk = new EncodedVideoChunk({
@@ -153,28 +259,120 @@ class Player {
 
     // Add video chunk to muxer
     this.#videoMuxer.addVideoChunk(encodedChunk, undefined, chunk.timestamp);
+  };
 
-    // Log every 30 frames
-    if (this.#videoChunkCount % 30 === 0) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[Player] Video chunk #${this.#videoChunkCount}, ts: ${chunk.timestamp}, pending: ${this.#videoPendingChunks.length}`
-      );
+  #appendAudioChunk = (chunk: IEncodedChunk): void => {
+    if (this.#disposed || !this.#audioMuxer) {
+      return;
     }
+
+    // Use CONTINUOUS timestamps - always increment from last appended
+    const adjustedTimestamp: number = this.#lastAppendedAudioTimestamp;
+    this.#lastAppendedAudioTimestamp += this.#audioChunkDurationUs;
+
+    // Create EncodedAudioChunk from IEncodedChunk data
+    const encodedChunk: EncodedAudioChunk = new EncodedAudioChunk({
+      type: chunk.key ? 'key' : 'delta',
+      timestamp: adjustedTimestamp,
+      duration: this.#audioChunkDurationUs,
+      data: chunk.data
+    });
+
+    // Add audio chunk to muxer with adjusted timestamp
+    this.#audioMuxer.addAudioChunk(encodedChunk, undefined, adjustedTimestamp);
+  };
+
+  /**
+   * Get the video buffer ahead in seconds
+   * Returns how many seconds of video are buffered ahead of current playback position
+   */
+  #getVideoBufferAhead = (): number => {
+    if (!this.#videoElement || !this.#videoSourceBuffer) {
+      return 0;
+    }
+
+    const currentTime: number = this.#videoElement.currentTime;
+    const buffered: TimeRanges = this.#videoSourceBuffer.buffered;
+
+    // Find the buffer range that contains currentTime
+    for (let i: number = 0; i < buffered.length; i++) {
+      const start: number = buffered.start(i);
+      const end: number = buffered.end(i);
+
+      if (currentTime >= start && currentTime <= end) {
+        return end - currentTime;
+      }
+    }
+
+    return 0;
+  };
+
+  #createVideoMuxer = (): void => {
+    if (this.#videoMuxer) {
+      try {
+        this.#videoMuxer.finalize();
+      } catch {
+        // Ignore errors
+      }
+    }
+
+    this.#videoMuxer = new Muxer({
+      target: new StreamTarget({
+        onData: (data: Uint8Array, _position: number): void => {
+          this.#videoPendingChunks.push(data);
+          this.#appendVideo();
+        }
+      }),
+      video: {
+        codec: 'V_VP8',
+        width: this.#width,
+        height: this.#height
+      },
+      firstTimestampBehavior: 'offset',
+      streaming: true,
+      type: 'webm'
+    });
+  };
+
+  #createAudioMuxer = (): void => {
+    if (this.#audioMuxer) {
+      try {
+        this.#audioMuxer.finalize();
+      } catch {
+        // Ignore errors
+      }
+    }
+
+    this.#audioMuxer = new Muxer({
+      target: new StreamTarget({
+        onData: (data: Uint8Array, _position: number): void => {
+          this.#audioPendingChunks.push(data);
+          this.#appendAudio();
+        }
+      }),
+      audio: {
+        codec: 'A_OPUS',
+        sampleRate: this.#sampleRate,
+        numberOfChannels: 2
+      },
+      firstTimestampBehavior: 'offset',
+      streaming: true,
+      type: 'webm'
+    });
   };
 
   /**
    * Set the active audio source (called when tiles are swapped)
    * Clears audio buffer and feeds new source from current position
    */
-  setActiveAudioSource = (sourceId: AudioSourceId): void => {
+  #setActiveAudioSource = (sourceId: AudioSourceId): void => {
     if (this.#activeAudioSource === sourceId) {
       return;
     }
 
     const oldSource: AudioSourceId = this.#activeAudioSource;
-    const newBuffer: Array<IEncodedChunk> | undefined = this.#audioBuffers.get(sourceId);
-    const oldBuffer: Array<IEncodedChunk> | undefined = this.#audioBuffers.get(oldSource);
+    const newBuffer: Array<AudioData> | undefined = this.#cachedAudioData.get(sourceId);
+    const oldBuffer: Array<AudioData> | undefined = this.#cachedAudioData.get(oldSource);
 
     // Get ACTUAL playback position (not buffered position)
     const currentTime: number = this.#videoElement?.currentTime ?? 0;
@@ -220,223 +418,29 @@ class Player {
     // eslint-disable-next-line no-console
     console.log(`[Player] Audio muxer recreated, timestamp reset to ${this.#lastAppendedAudioTimestamp}µs`);
 
-    // Feed buffered audio from the new source
-    if (newBuffer && newBuffer.length > 0 && this.#audioMuxer) {
-      // Calculate which chunk index corresponds to the CURRENT PLAYBACK position
-      const playbackChunkIndex: number = Math.floor(currentTimeUs / this.#audioChunkDurationUs);
+    // Feed buffered AudioData from the new source (re-encode them)
+    if (newBuffer && newBuffer.length > 0 && this.#audioEncoder) {
+      // Calculate which frame index corresponds to the CURRENT PLAYBACK position
+      const playbackFrameIndex: number = Math.floor(currentTimeUs / this.#audioChunkDurationUs);
 
-      // Find chunks in the new buffer starting from current playback position
-      const startIndex: number = Math.max(0, Math.min(playbackChunkIndex, newBuffer.length - 1));
-      const chunksToFeed: Array<IEncodedChunk> = newBuffer.slice(startIndex);
+      // Find frames in the new buffer starting from current playback position
+      const startIndex: number = Math.max(0, Math.min(playbackFrameIndex, newBuffer.length - 1));
+      const framesToFeed: Array<AudioData> = newBuffer.slice(startIndex);
 
       // eslint-disable-next-line no-console
-      console.log(`[Player] Feeding ${chunksToFeed.length} buffered chunks from index ${startIndex}`);
+      console.log(`[Player] Feeding ${framesToFeed.length} buffered AudioData from index ${startIndex}`);
 
-      // Feed the buffered chunks with continuous timestamps FROM CURRENT POSITION
-      for (const chunk of chunksToFeed) {
-        const adjustedTimestamp: number = this.#lastAppendedAudioTimestamp;
-        this.#lastAppendedAudioTimestamp += this.#audioChunkDurationUs;
-
-        const encodedChunk: EncodedAudioChunk = new EncodedAudioChunk({
-          type: 'key',
-          timestamp: adjustedTimestamp,
-          duration: this.#audioChunkDurationUs,
-          data: chunk.data
-        });
-
-        this.#audioMuxer.addAudioChunk(encodedChunk, undefined, adjustedTimestamp);
+      // Re-encode the buffered AudioData
+      for (const audioData of framesToFeed) {
+        this.#audioEncoder.encode(audioData);
       }
 
-      // Clear the new buffer since we've consumed it
+      // Close and clear the consumed frames from buffer
+      for (const audioData of newBuffer) {
+        audioData.close();
+      }
       newBuffer.length = 0;
     }
-  };
-
-  /**
-   * Get the current active audio source
-   */
-  getActiveAudioSource = (): AudioSourceId => {
-    return this.#activeAudioSource;
-  };
-
-  /**
-   * Load and play two DASH streams with PiP compositor
-   */
-  load = async (mpdUrl1: string, mpdUrl2: string): Promise<void> => {
-    this.#abortController = new AbortController();
-    const signal: AbortSignal = this.#abortController.signal;
-
-    // Initialize PiP position
-    this.#pipX = this.#width - this.#width / 3 - 10;
-    this.#pipY = this.#height - this.#height / 3 - 10;
-    this.#pipWidth = this.#width / 3;
-    this.#pipHeight = this.#height / 3;
-
-    // Create encoder
-    this.#encoder = new Encoder();
-    await this.#encoder.init();
-    this.#encoder.onChunk((chunk: IEncodedChunk) => {
-      this.appendVideoChunk(chunk);
-    });
-
-    // Create DASH stream managers (audio pulled directly from decoder buffers)
-    this.#stream1 = new StreamManager({
-      mpdUrl: mpdUrl1,
-      sourceId: 'dash1',
-      signal
-    });
-
-    this.#stream2 = new StreamManager({
-      mpdUrl: mpdUrl2,
-      sourceId: 'dash2',
-      signal
-    });
-
-    // Initialize streams (fetch manifests)
-    await Promise.all([this.#stream1.init(), this.#stream2.init()]);
-
-    // Setup mouse event handlers for PiP interaction
-    this.#setupPipInteraction();
-
-    // Start the main loop
-    await this.#runMainLoop();
-
-    // Cleanup
-    await this.#encoder?.flush();
-  };
-
-  dispose = (): void => {
-    this.#disposed = true;
-
-    // Abort any ongoing fetches
-    this.#abortController?.abort();
-
-    // Destroy DASH stream managers
-    this.#stream1?.destroy();
-    this.#stream2?.destroy();
-    this.#stream1 = null;
-    this.#stream2 = null;
-
-    // Destroy encoder
-    this.#encoder?.destroy();
-    this.#encoder = null;
-
-    // Finalize muxers
-    if (this.#videoMuxer) {
-      try {
-        this.#videoMuxer.finalize();
-      } catch {
-        // Ignore errors during finalize
-      }
-      this.#videoMuxer = null;
-    }
-    if (this.#audioMuxer) {
-      try {
-        this.#audioMuxer.finalize();
-      } catch {
-        // Ignore errors during finalize
-      }
-      this.#audioMuxer = null;
-    }
-
-    if (this.#videoSourceBuffer) {
-      this.#videoSourceBuffer.removeEventListener('updateend', this.#onVideoUpdateEnd);
-    }
-    if (this.#audioSourceBuffer) {
-      this.#audioSourceBuffer.removeEventListener('updateend', this.#onAudioUpdateEnd);
-    }
-    if (this.#mediaSource && this.#mediaSource.readyState === 'open') {
-      try {
-        this.#mediaSource.endOfStream();
-      } catch {
-        // Ignore
-      }
-    }
-    if (this.#videoElement) {
-      URL.revokeObjectURL(this.#videoElement.src);
-      this.#videoElement.src = '';
-    }
-    this.#videoPendingChunks = [];
-    this.#audioPendingChunks = [];
-  };
-
-  /**
-   * Get the video buffer ahead in seconds
-   * Returns how many seconds of video are buffered ahead of current playback position
-   */
-  #getVideoBufferAhead = (): number => {
-    if (!this.#videoElement || !this.#videoSourceBuffer) {
-      return 0;
-    }
-
-    const currentTime: number = this.#videoElement.currentTime;
-    const buffered: TimeRanges = this.#videoSourceBuffer.buffered;
-
-    // Find the buffer range that contains currentTime
-    for (let i: number = 0; i < buffered.length; i++) {
-      const start: number = buffered.start(i);
-      const end: number = buffered.end(i);
-
-      if (currentTime >= start && currentTime <= end) {
-        return end - currentTime;
-      }
-    }
-
-    return 0;
-  };
-
-  #createVideoMuxer = (): void => {
-    if (this.#videoMuxer) {
-      try {
-        this.#videoMuxer.finalize();
-      } catch {
-        // Ignore errors
-      }
-    }
-
-    this.#videoMuxer = new Muxer({
-      target: new StreamTarget({
-        onData: (data: Uint8Array, _position: number): void => {
-          this.#videoPendingChunks.push(data);
-          this.#tryAppendVideo();
-        }
-      }),
-      video: {
-        codec: 'V_VP8',
-        width: this.#width,
-        height: this.#height
-      },
-      firstTimestampBehavior: 'offset',
-      streaming: true,
-      type: 'webm'
-    });
-  };
-
-  #createAudioMuxer = (): void => {
-    if (this.#audioMuxer) {
-      try {
-        this.#audioMuxer.finalize();
-      } catch {
-        // Ignore errors
-      }
-    }
-
-    this.#audioMuxer = new Muxer({
-      target: new StreamTarget({
-        onData: (data: Uint8Array, _position: number): void => {
-          this.#audioPendingChunks.push(data);
-          this.#tryAppendAudio();
-        }
-      }),
-      audio: {
-        codec: 'A_OPUS',
-        sampleRate: this.#sampleRate,
-        numberOfChannels: 2
-      },
-      firstTimestampBehavior: 'offset',
-      streaming: true,
-      type: 'webm'
-    });
   };
 
   /**
@@ -478,8 +482,8 @@ class Player {
       // Check buffer and fetch more if needed
       this.#maintainBuffer();
 
-      // Pull audio chunks from both decoders and buffer them
-      this.#pullAudioChunks();
+      // Pull decoded audio data from both decoders and encode them
+      this.#pullAudioData();
 
       // Get frames from decoders
       const frame1: VideoFrame | undefined = this.#stream1.decoder.getFrame();
@@ -529,7 +533,7 @@ class Player {
       // Encode and send to MSE
       const timestamp: number = frameCount * (1000000 / 30);
       const videoFrame: VideoFrame = new VideoFrame(canvas, {timestamp});
-      this.#encoder?.encode(videoFrame);
+      this.#videoEncoder?.encode(videoFrame);
       frameCount++;
     }
   };
@@ -564,7 +568,7 @@ class Player {
     const bufferAhead: number = this.#getVideoBufferAhead();
 
     // Fetch more if buffer is below threshold
-    if (bufferAhead < Player.MAX_BUFFER_SEC) {
+    if (bufferAhead < Player.MAX_BUFFER_AHEAD) {
       // Fetch a few chunks from each stream
       if (!this.#stream1.isEnded) {
         this.#stream1.fetchNextChunk();
@@ -576,62 +580,56 @@ class Player {
   };
 
   /**
-   * Pull audio chunks from decoder buffers and process them
-   * This is called every frame to collect new audio data
+   * Pull decoded audio data from decoder buffers and encode them
+   * This is called every frame to collect new audio data (symmetric with video)
    */
-  #pullAudioChunks = (): void => {
-    if (!this.#stream1 || !this.#stream2) return;
+  #pullAudioData = (): void => {
+    if (!this.#stream1 || !this.#stream2 || !this.#audioEncoder) return;
 
-    // Pull all available audio chunks from stream1 (dash1)
-    const chunks1: Array<IEncodedChunk> = this.#stream1.decoder.drainAudioChunks();
-    for (const chunk of chunks1) {
-      this.#bufferAudioChunk(chunk, 'dash1');
+    // Pull all available audio data from stream1 (source1)
+    const audioData1: Array<AudioData> = this.#stream1.decoder.drainAudioData();
+    for (const audioData of audioData1) {
+      this.#processAudioData(audioData, 'source1');
     }
 
-    // Pull all available audio chunks from stream2 (dash2)
-    const chunks2: Array<IEncodedChunk> = this.#stream2.decoder.drainAudioChunks();
-    for (const chunk of chunks2) {
-      this.#bufferAudioChunk(chunk, 'dash2');
+    // Pull all available audio data from stream2 (source2)
+    const audioData2: Array<AudioData> = this.#stream2.decoder.drainAudioData();
+    for (const audioData of audioData2) {
+      this.#processAudioData(audioData, 'source2');
     }
   };
 
   /**
-   * Buffer an audio chunk and append to muxer if from active source
+   * Process decoded AudioData: buffer it and encode if from active source
    */
-  #bufferAudioChunk = (chunk: IEncodedChunk, sourceId: AudioSourceId): void => {
-    if (this.#disposed || !this.#audioMuxer) {
+  #processAudioData = (audioData: AudioData, sourceId: AudioSourceId): void => {
+    if (this.#disposed) {
+      audioData.close();
+
       return;
     }
 
-    // ALWAYS store chunk in the source's buffer (even if not active)
-    const buffer: Array<IEncodedChunk> | undefined = this.#audioBuffers.get(sourceId);
+    const buffer: Array<AudioData> | undefined = this.#cachedAudioData.get(sourceId);
     if (buffer) {
-      buffer.push(chunk);
-      // Keep only last 60 seconds of audio (3000 chunks at 20ms each)
+      // Clone the AudioData since we need to keep it in buffer
+      buffer.push(audioData.clone());
+      // Keep only last 60 seconds of audio (3000 frames at 20ms each)
       while (buffer.length > 3000) {
-        buffer.shift();
+        const old: AudioData | undefined = buffer.shift();
+        old?.close();
       }
     }
 
-    // Only append to muxer if this is the active audio source
+    // Only encode if this is the active audio source
     if (sourceId !== this.#activeAudioSource) {
+      audioData.close();
+
       return;
     }
 
-    // Use CONTINUOUS timestamps - always increment from last appended
-    const adjustedTimestamp: number = this.#lastAppendedAudioTimestamp;
-    this.#lastAppendedAudioTimestamp += this.#audioChunkDurationUs;
-
-    // Create a real EncodedAudioChunk from our data
-    const encodedChunk: EncodedAudioChunk = new EncodedAudioChunk({
-      type: 'key', // Audio chunks are always key frames
-      timestamp: adjustedTimestamp,
-      duration: this.#audioChunkDurationUs,
-      data: chunk.data
-    });
-
-    // Add audio chunk to muxer
-    this.#audioMuxer.addAudioChunk(encodedChunk, undefined, adjustedTimestamp);
+    // Encode the AudioData - the encoder callback will handle muxing
+    this.#audioEncoder?.encode(audioData);
+    audioData.close();
   };
 
   /**
@@ -704,9 +702,9 @@ class Player {
     const handleDoubleClick = (): void => {
       this.#swapped = !this.#swapped;
       // Switch audio source
-      this.setActiveAudioSource(this.#swapped ? 'dash2' : 'dash1');
+      this.#setActiveAudioSource(this.#swapped ? 'source2' : 'source1');
       // eslint-disable-next-line no-console
-      console.log(`[Player] Swapped - audio now: ${this.#swapped ? 'dash2' : 'dash1'}`);
+      console.log(`[Player] Swapped - audio now: ${this.#swapped ? 'source2' : 'source1'}`);
     };
 
     this.#videoElement.addEventListener('mousedown', handleMouseDown);
@@ -716,13 +714,8 @@ class Player {
     this.#videoElement.addEventListener('dblclick', handleDoubleClick);
   };
 
-  #tryAppendVideo = (): void => {
-    if (
-      this.#disposed ||
-      this.#isVideoAppending ||
-      this.#videoPendingChunks.length === 0 ||
-      !this.#videoSourceBuffer
-    ) {
+  #appendVideo = (): void => {
+    if (this.#disposed || this.#videoPendingChunks.length === 0 || !this.#videoSourceBuffer) {
       return;
     }
 
@@ -730,7 +723,6 @@ class Player {
       return;
     }
 
-    this.#isVideoAppending = true;
     const data: Uint8Array | undefined = this.#videoPendingChunks.shift();
     if (data) {
       try {
@@ -738,18 +730,12 @@ class Player {
       } catch (e) {
         // eslint-disable-next-line no-console
         console.error('[Player] Video appendBuffer error:', e);
-        this.#isVideoAppending = false;
       }
     }
   };
 
-  #tryAppendAudio = (): void => {
-    if (
-      this.#disposed ||
-      this.#isAudioAppending ||
-      this.#audioPendingChunks.length === 0 ||
-      !this.#audioSourceBuffer
-    ) {
+  #appendAudio = (): void => {
+    if (this.#disposed || this.#audioPendingChunks.length === 0 || !this.#audioSourceBuffer) {
       return;
     }
 
@@ -757,7 +743,6 @@ class Player {
       return;
     }
 
-    this.#isAudioAppending = true;
     const data: Uint8Array | undefined = this.#audioPendingChunks.shift();
     if (data) {
       try {
@@ -765,14 +750,11 @@ class Player {
       } catch (e) {
         // eslint-disable-next-line no-console
         console.error('[Player] Audio appendBuffer error:', e);
-        this.#isAudioAppending = false;
       }
     }
   };
 
   #onVideoUpdateEnd = (): void => {
-    this.#isVideoAppending = false;
-
     // Try to play when we have enough buffered video data
     if (this.#videoElement && this.#videoSourceBuffer) {
       const buffered: TimeRanges = this.#videoSourceBuffer.buffered;
@@ -789,15 +771,67 @@ class Player {
       }
     }
 
-    // Process next video chunk
-    this.#tryAppendVideo();
+    this.#trimVideoBuffer();
+
+    this.#appendVideo();
   };
 
   #onAudioUpdateEnd = (): void => {
-    this.#isAudioAppending = false;
+    this.#trimAudioBuffer();
 
-    // Process next audio chunk
-    this.#tryAppendAudio();
+    this.#appendAudio();
+  };
+
+  /**
+   * Remove video data that is more than MAX_BUFFER_BEHIND seconds behind current playback
+   */
+  #trimVideoBuffer = (): void => {
+    if (!this.#videoElement || !this.#videoSourceBuffer || this.#videoSourceBuffer.updating) {
+      return;
+    }
+
+    const currentTime: number = this.#videoElement.currentTime;
+    const removeEnd: number = currentTime - Player.MAX_BUFFER_BEHIND;
+
+    if (removeEnd <= 0) {
+      return;
+    }
+
+    const buffered: TimeRanges = this.#videoSourceBuffer.buffered;
+    if (buffered.length > 0 && buffered.start(0) < removeEnd) {
+      try {
+        this.#videoSourceBuffer.remove(0, removeEnd);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[Player] Failed to trim video buffer:', e);
+      }
+    }
+  };
+
+  /**
+   * Remove audio data that is more than MAX_BUFFER_BEHIND seconds behind current playback
+   */
+  #trimAudioBuffer = (): void => {
+    if (!this.#videoElement || !this.#audioSourceBuffer || this.#audioSourceBuffer.updating) {
+      return;
+    }
+
+    const currentTime: number = this.#videoElement.currentTime;
+    const removeEnd: number = currentTime - Player.MAX_BUFFER_BEHIND;
+
+    if (removeEnd <= 0) {
+      return;
+    }
+
+    const buffered: TimeRanges = this.#audioSourceBuffer.buffered;
+    if (buffered.length > 0 && buffered.start(0) < removeEnd) {
+      try {
+        this.#audioSourceBuffer.remove(0, removeEnd);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[Player] Failed to trim audio buffer:', e);
+      }
+    }
   };
 }
 
