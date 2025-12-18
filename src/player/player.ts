@@ -4,10 +4,6 @@ import IEncodedChunk from '@interfaces/IEncodedChunk';
 import StreamManager from '@stream/streamManager';
 import {Muxer, StreamTarget} from 'webm-muxer';
 
-/**
- * Player - Plays encoded video/audio using Media Source Extensions
- * Uses separate SourceBuffers for video and audio to enable audio switching
- */
 class Player {
   #videoElementId: string;
   #mediaSource: MediaSource | null = null;
@@ -115,7 +111,6 @@ class Player {
       throw new Error(`Audio MIME type not supported: ${audioMimeType}`);
     }
 
-    // Video SourceBuffer
     this.#videoSourceBuffer = this.#mediaSource.addSourceBuffer(videoMimeType);
     this.#videoSourceBuffer.mode = 'segments';
     this.#videoSourceBuffer.addEventListener('updateend', this.#onVideoUpdateEnd);
@@ -124,7 +119,6 @@ class Player {
       console.error('[Player] Video SourceBuffer error:', e);
     });
 
-    // Audio SourceBuffer
     this.#audioSourceBuffer = this.#mediaSource.addSourceBuffer(audioMimeType);
     this.#audioSourceBuffer.mode = 'segments';
     this.#audioSourceBuffer.addEventListener('updateend', this.#onAudioUpdateEnd);
@@ -133,25 +127,7 @@ class Player {
       console.error('[Player] Audio SourceBuffer error:', e);
     });
 
-    // Create video muxer (video only)
-    this.#videoMuxer = new Muxer({
-      target: new StreamTarget({
-        onData: (data: Uint8Array, _position: number): void => {
-          this.#videoPendingChunks.push(data);
-          this.#tryAppendVideo();
-        }
-      }),
-      video: {
-        codec: 'V_VP8',
-        width: this.#width,
-        height: this.#height
-      },
-      firstTimestampBehavior: 'offset',
-      streaming: true,
-      type: 'webm'
-    });
-
-    // Create audio muxer (audio only)
+    this.#createVideoMuxer();
     this.#createAudioMuxer();
 
     this.#initialized = true;
@@ -326,7 +302,6 @@ class Player {
 
   /**
    * Load and play two DASH streams with PiP compositor
-   * MSE player orchestrates all fetching, decoding, compositing, and encoding
    */
   load = async (mpdUrl1: string, mpdUrl2: string): Promise<void> => {
     this.#abortController = new AbortController();
@@ -455,11 +430,34 @@ class Player {
     return 0;
   };
 
-  /**
-   * Create or recreate the audio muxer
-   */
+  #createVideoMuxer = (): void => {
+    if (this.#videoMuxer) {
+      try {
+        this.#videoMuxer.finalize();
+      } catch {
+        // Ignore errors
+      }
+    }
+
+    this.#videoMuxer = new Muxer({
+      target: new StreamTarget({
+        onData: (data: Uint8Array, _position: number): void => {
+          this.#videoPendingChunks.push(data);
+          this.#tryAppendVideo();
+        }
+      }),
+      video: {
+        codec: 'V_VP8',
+        width: this.#width,
+        height: this.#height
+      },
+      firstTimestampBehavior: 'offset',
+      streaming: true,
+      type: 'webm'
+    });
+  };
+
   #createAudioMuxer = (): void => {
-    // Finalize existing muxer if any
     if (this.#audioMuxer) {
       try {
         this.#audioMuxer.finalize();

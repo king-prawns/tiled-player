@@ -1,8 +1,8 @@
 import Decoder, {type AudioSourceId} from '@decoder/decoder';
-import generateDash from '@generator/dash';
+import generate from '@generator/dash';
 import IEncodedChunk from '@interfaces/IEncodedChunk';
 
-export interface DashStreamConfig {
+interface StreamConfig {
   mpdUrl: string;
   sourceId: AudioSourceId;
   onAudioChunk?: (chunk: IEncodedChunk, sourceId: AudioSourceId) => void;
@@ -14,13 +14,13 @@ export interface DashStreamConfig {
  * MSEPlayer controls when to fetch via fetchNextChunk()
  */
 class StreamManager {
-  #config: DashStreamConfig;
+  #config: StreamConfig;
   #decoder: Decoder;
-  #dashGenerator: AsyncGenerator<{data: Uint8Array; type: 'video' | 'audio'}> | null = null;
+  #generator: AsyncGenerator<{data: Uint8Array; type: 'video' | 'audio'}> | null = null;
   #isFetching: boolean = false;
   #isEnded: boolean = false;
 
-  constructor(config: DashStreamConfig) {
+  constructor(config: StreamConfig) {
     this.#config = config;
     this.#decoder = new Decoder(config.sourceId, config.onAudioChunk, config.signal);
   }
@@ -37,7 +37,7 @@ class StreamManager {
    * Initialize the DASH generator (fetch manifest and prepare segment iterator)
    */
   init = (): void => {
-    this.#dashGenerator = generateDash({
+    this.#generator = generate({
       mpdUrl: this.#config.mpdUrl,
       signal: this.#config.signal
     });
@@ -49,7 +49,7 @@ class StreamManager {
    * MSEPlayer calls this when buffer needs more data
    */
   fetchNextChunk = async (): Promise<boolean> => {
-    if (this.#isEnded || !this.#dashGenerator || this.#config.signal?.aborted) {
+    if (this.#isEnded || !this.#generator || this.#config.signal?.aborted) {
       return false;
     }
 
@@ -63,7 +63,7 @@ class StreamManager {
       const result: IteratorResult<{
         data: Uint8Array;
         type: 'video' | 'audio';
-      }> = await this.#dashGenerator.next();
+      }> = await this.#generator.next();
 
       if (result.done) {
         this.#isEnded = true;

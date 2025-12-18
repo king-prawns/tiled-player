@@ -72,7 +72,6 @@ class Encoder {
     }
   };
 
-  // Usually this function would be sending data chunks over the network or muxing them into a media container for storage.
   #handleChunk: EncodedVideoChunkOutputCallback = (
     chunk: EncodedVideoChunk,
     metadata?: EncodedVideoChunkMetadata
