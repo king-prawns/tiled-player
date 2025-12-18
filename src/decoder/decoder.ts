@@ -21,8 +21,8 @@ class Decoder {
   #signal: AbortSignal;
 
   // Video frames buffer (decoded)
-  #frames: Array<VideoFrame> = [];
-  // Audio data buffer (decoded) - symmetric with video frames
+  #videoFrames: Array<VideoFrame> = [];
+  // Audio data buffer (decoded)
   #audioFrames: Array<AudioData> = [];
 
   #videoFileOffset: number = 0;
@@ -40,10 +40,10 @@ class Decoder {
   constructor(signal: AbortSignal) {
     this.#signal = signal;
 
-    // Video decoder - outputs to #frames buffer
+    // Video decoder - outputs to #videoFrames buffer
     this.#videoDecoder = new VideoDecoder({
       output: (frame: VideoFrame): void => {
-        this.#frames.push(frame);
+        this.#videoFrames.push(frame);
       },
       error: (e: DOMException): void => {
         // eslint-disable-next-line no-console
@@ -51,7 +51,7 @@ class Decoder {
       }
     });
 
-    // Audio decoder - outputs to #audioFrames buffer (symmetric with video)
+    // Audio decoder - outputs to #audioFrames buffer
     this.#audioDecoder = new AudioDecoder({
       output: (audioData: AudioData): void => {
         this.#audioFrames.push(audioData);
@@ -70,12 +70,12 @@ class Decoder {
     this.#setupAudioMp4Callbacks();
   }
 
-  get frames(): Array<VideoFrame> {
-    return this.#frames;
+  get videoFrames(): Array<VideoFrame> {
+    return this.#videoFrames;
   }
 
   // Pull video frame from buffer
-  getFrame = (): VideoFrame | undefined => this.#frames.shift();
+  getVideoFrame = (): VideoFrame | undefined => this.#videoFrames.shift();
 
   // Get all available audio data and clear buffer
   drainAudioData = (): Array<AudioData> => {
@@ -111,8 +111,8 @@ class Decoder {
     this.#videoDecoder.close();
     this.#audioDecoder?.close();
     // Close all video frames
-    this.#frames.forEach((f: VideoFrame) => f.close());
-    this.#frames.length = 0;
+    this.#videoFrames.forEach((f: VideoFrame) => f.close());
+    this.#videoFrames.length = 0;
     // Close all audio data
     this.#audioFrames.forEach((a: AudioData) => a.close());
     this.#audioFrames.length = 0;

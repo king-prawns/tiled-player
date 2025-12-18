@@ -486,13 +486,13 @@ class Player {
       this.#pullAudioData();
 
       // Get frames from decoders
-      const frame1: VideoFrame | undefined = this.#stream1.decoder.getFrame();
-      const frame2: VideoFrame | undefined = this.#stream2.decoder.getFrame();
+      const frame1: VideoFrame | undefined = this.#stream1.decoder.getVideoFrame();
+      const frame2: VideoFrame | undefined = this.#stream2.decoder.getVideoFrame();
 
       if (!frame1 && !frame2) {
         const bothEnded: boolean = this.#stream1.isEnded && this.#stream2.isEnded;
         const noMoreFrames: boolean =
-          this.#stream1.decoder.frames.length === 0 && this.#stream2.decoder.frames.length === 0;
+          this.#stream1.decoder.videoFrames.length === 0 && this.#stream2.decoder.videoFrames.length === 0;
 
         if (bothEnded && noMoreFrames) {
           // eslint-disable-next-line no-console
@@ -545,7 +545,8 @@ class Player {
     if (!this.#stream1 || !this.#stream2) return;
 
     while (
-      (this.#stream1.decoder.frames.length < minFrames || this.#stream2.decoder.frames.length < minFrames) &&
+      (this.#stream1.decoder.videoFrames.length < minFrames ||
+        this.#stream2.decoder.videoFrames.length < minFrames) &&
       !this.#disposed
     ) {
       // eslint-disable-next-line no-await-in-loop
@@ -581,7 +582,7 @@ class Player {
 
   /**
    * Pull decoded audio data from decoder buffers and encode them
-   * This is called every frame to collect new audio data (symmetric with video)
+   * This is called every frame to collect new audio data
    */
   #pullAudioData = (): void => {
     if (!this.#stream1 || !this.#stream2 || !this.#audioEncoder) return;
