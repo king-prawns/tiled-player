@@ -7,16 +7,10 @@ button {
   cursor: pointer;
 }
 
-canvas {
-  border: 1px solid #202124;
-}
-
-.video-container {
-  display: flex;
-  gap: 20px;
-  flex-wrap: wrap;
-}
-
 .video-container h3 {
   margin: 10px 0 5px;
+}
+
+.video-container video {
+  border: 1px solid #202124;
 }

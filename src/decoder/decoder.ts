@@ -18,10 +18,10 @@ export type AudioSourceId = 'dash1' | 'dash2';
 const AUDIO_SAMPLE_RATE: number = 48000;
 
 /**
- * DashDecoder - Decodes a single DASH stream (video + audio)
+ * Decoder - Decodes a single DASH stream (video + audio)
  * Uses mp4box.js for demuxing and WebCodecs for decoding
  */
-class DashDecoder {
+class Decoder {
   #sourceId: AudioSourceId;
   #signal?: AbortSignal;
   #onAudioChunk?: (chunk: IEncodedChunk, sourceId: AudioSourceId) => void;
@@ -369,4 +369,4 @@ class DashDecoder {
   };
 }
 
-export default DashDecoder;
+export default Decoder;

@@ -1,6 +1,13 @@
 import IEncodedChunk from '@interfaces/IEncodedChunk';
 import parseMPD, {DashChunk, DashSegment, ParsedDash} from '@parser/dash';
 
+export interface DashGeneratorOptions {
+  mpdUrl: string;
+  signal?: AbortSignal;
+  preferOpus?: boolean;
+  onVideoChunk?: (chunk: IEncodedChunk) => void;
+  onAudioChunk?: (chunk: IEncodedChunk) => void;
+}
 /**
  * Fetch a segment and return its data
  */
@@ -14,14 +21,6 @@ async function fetchSegment(url: string): Promise<Uint8Array> {
   const buffer: ArrayBuffer = await response.arrayBuffer();
 
   return new Uint8Array(buffer);
-}
-
-export interface DashGeneratorOptions {
-  mpdUrl: string;
-  signal?: AbortSignal;
-  preferOpus?: boolean;
-  onVideoChunk?: (chunk: IEncodedChunk) => void;
-  onAudioChunk?: (chunk: IEncodedChunk) => void;
 }
 
 /**

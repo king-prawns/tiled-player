@@ -1,14 +1,14 @@
-import {AudioSourceId} from '@dash/DashDecoder';
-import DashStreamManager from '@dash/DashStreamManager';
+import {AudioSourceId} from '@decoder/decoder';
 import Encoder from '@encoder/encoder';
 import IEncodedChunk from '@interfaces/IEncodedChunk';
+import StreamManager from '@stream/streamManager';
 import {Muxer, StreamTarget} from 'webm-muxer';
 
 /**
- * MSEPlayer - Plays encoded video/audio using Media Source Extensions
+ * Player - Plays encoded video/audio using Media Source Extensions
  * Uses separate SourceBuffers for video and audio to enable audio switching
  */
-class MSEPlayer {
+class Player {
   #videoElementId: string;
   #mediaSource: MediaSource | null = null;
   #videoSourceBuffer: SourceBuffer | null = null;
@@ -35,7 +35,7 @@ class MSEPlayer {
   #lastAppendedAudioTimestamp: number = 0;
   // Audio chunk duration in microseconds (20ms for Opus)
   #audioChunkDurationUs: number = 20_000;
-  // Buffer audio from BOTH sources (key insight from MSEPlayer2!)
+  // Buffer audio from BOTH sources (key insight from Player2!)
   #audioBuffers: Map<AudioSourceId, Array<IEncodedChunk>> = new Map([
     ['dash1', []],
     ['dash2', []]
@@ -45,8 +45,8 @@ class MSEPlayer {
   #disposed: boolean = false;
 
   // DASH stream management - MSE player is the orchestrator
-  #stream1: DashStreamManager | null = null;
-  #stream2: DashStreamManager | null = null;
+  #stream1: StreamManager | null = null;
+  #stream2: StreamManager | null = null;
   #encoder: Encoder | null = null;
   #abortController: AbortController | null = null;
 
@@ -89,7 +89,7 @@ class MSEPlayer {
         'sourceopen',
         () => {
           // eslint-disable-next-line no-console
-          console.log('[MSEPlayer] MediaSource opened');
+          console.log('[Player] MediaSource opened');
           resolve();
         },
         {once: true}
@@ -121,7 +121,7 @@ class MSEPlayer {
     this.#videoSourceBuffer.addEventListener('updateend', this.#onVideoUpdateEnd);
     this.#videoSourceBuffer.addEventListener('error', (e: Event) => {
       // eslint-disable-next-line no-console
-      console.error('[MSEPlayer] Video SourceBuffer error:', e);
+      console.error('[Player] Video SourceBuffer error:', e);
     });
 
     // Audio SourceBuffer
@@ -130,7 +130,7 @@ class MSEPlayer {
     this.#audioSourceBuffer.addEventListener('updateend', this.#onAudioUpdateEnd);
     this.#audioSourceBuffer.addEventListener('error', (e: Event) => {
       // eslint-disable-next-line no-console
-      console.error('[MSEPlayer] Audio SourceBuffer error:', e);
+      console.error('[Player] Audio SourceBuffer error:', e);
     });
 
     // Create video muxer (video only)
@@ -156,7 +156,7 @@ class MSEPlayer {
 
     this.#initialized = true;
     // eslint-disable-next-line no-console
-    console.log('[MSEPlayer] Initialized with video:', videoMimeType, 'audio:', audioMimeType);
+    console.log('[Player] Initialized with video:', videoMimeType, 'audio:', audioMimeType);
   };
 
   /**
@@ -184,7 +184,7 @@ class MSEPlayer {
     if (this.#videoChunkCount % 30 === 0) {
       // eslint-disable-next-line no-console
       console.log(
-        `[MSEPlayer] Video chunk #${this.#videoChunkCount}, ts: ${chunk.timestamp}, pending: ${this.#videoPendingChunks.length}`
+        `[Player] Video chunk #${this.#videoChunkCount}, ts: ${chunk.timestamp}, pending: ${this.#videoPendingChunks.length}`
       );
     }
   };
@@ -247,7 +247,7 @@ class MSEPlayer {
 
     // eslint-disable-next-line no-console
     console.log(
-      `[MSEPlayer] Switching audio: ${oldSource} → ${sourceId}, ` +
+      `[Player] Switching audio: ${oldSource} → ${sourceId}, ` +
         `currentTime=${currentTime.toFixed(2)}s, ` +
         `newBuffer=${newBuffer?.length || 0}, oldBuffer=${oldBuffer?.length || 0}`
     );
@@ -264,14 +264,14 @@ class MSEPlayer {
           if (bufferEnd > clearFrom) {
             // eslint-disable-next-line no-console
             console.log(
-              `[MSEPlayer] Clearing audio buffer from ${clearFrom.toFixed(2)}s to ${bufferEnd.toFixed(2)}s`
+              `[Player] Clearing audio buffer from ${clearFrom.toFixed(2)}s to ${bufferEnd.toFixed(2)}s`
             );
             this.#audioSourceBuffer.remove(clearFrom, bufferEnd);
           }
         }
       } catch (e) {
         // eslint-disable-next-line no-console
-        console.warn('[MSEPlayer] Failed to clear audio buffer:', e);
+        console.warn('[Player] Failed to clear audio buffer:', e);
       }
     }
 
@@ -283,9 +283,7 @@ class MSEPlayer {
     this.#lastAppendedAudioTimestamp = currentTimeUs + 100_000; // Start 100ms ahead
 
     // eslint-disable-next-line no-console
-    console.log(
-      `[MSEPlayer] Audio muxer recreated, timestamp reset to ${this.#lastAppendedAudioTimestamp}µs`
-    );
+    console.log(`[Player] Audio muxer recreated, timestamp reset to ${this.#lastAppendedAudioTimestamp}µs`);
 
     // Feed buffered audio from the new source
     if (newBuffer && newBuffer.length > 0 && this.#audioMuxer) {
@@ -297,7 +295,7 @@ class MSEPlayer {
       const chunksToFeed: Array<IEncodedChunk> = newBuffer.slice(startIndex);
 
       // eslint-disable-next-line no-console
-      console.log(`[MSEPlayer] Feeding ${chunksToFeed.length} buffered chunks from index ${startIndex}`);
+      console.log(`[Player] Feeding ${chunksToFeed.length} buffered chunks from index ${startIndex}`);
 
       // Feed the buffered chunks with continuous timestamps FROM CURRENT POSITION
       for (const chunk of chunksToFeed) {
@@ -348,7 +346,7 @@ class MSEPlayer {
     });
 
     // Create DASH stream managers
-    this.#stream1 = new DashStreamManager({
+    this.#stream1 = new StreamManager({
       mpdUrl: mpdUrl1,
       sourceId: 'dash1',
       onAudioChunk: (chunk: IEncodedChunk, sourceId: AudioSourceId): void =>
@@ -356,7 +354,7 @@ class MSEPlayer {
       signal
     });
 
-    this.#stream2 = new DashStreamManager({
+    this.#stream2 = new StreamManager({
       mpdUrl: mpdUrl2,
       sourceId: 'dash2',
       onAudioChunk: (chunk: IEncodedChunk, sourceId: AudioSourceId): void =>
@@ -496,13 +494,13 @@ class MSEPlayer {
     if (!this.#stream1 || !this.#stream2) return;
 
     // eslint-disable-next-line no-console
-    console.log('[MSEPlayer] Fetching initial segments...');
+    console.log('[Player] Fetching initial segments...');
 
     // Initial fetch - get enough frames to start
     await this.#fetchUntilFramesAvailable(5);
 
     // eslint-disable-next-line no-console
-    console.log('[MSEPlayer] Starting compositor loop');
+    console.log('[Player] Starting compositor loop');
 
     // Create OffscreenCanvas for compositing
     const canvas: OffscreenCanvas = new OffscreenCanvas(this.#width, this.#height);
@@ -538,7 +536,7 @@ class MSEPlayer {
 
         if (bothEnded && noMoreFrames) {
           // eslint-disable-next-line no-console
-          console.log('[MSEPlayer] Both streams ended');
+          console.log('[Player] Both streams ended');
           break;
         }
         // eslint-disable-next-line no-await-in-loop
@@ -566,10 +564,10 @@ class MSEPlayer {
 
       ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
       ctx.fillRect(
-        this.#pipX + this.#pipWidth - MSEPlayer.RESIZE_HANDLE_SIZE,
-        this.#pipY + this.#pipHeight - MSEPlayer.RESIZE_HANDLE_SIZE,
-        MSEPlayer.RESIZE_HANDLE_SIZE,
-        MSEPlayer.RESIZE_HANDLE_SIZE
+        this.#pipX + this.#pipWidth - Player.RESIZE_HANDLE_SIZE,
+        this.#pipY + this.#pipHeight - Player.RESIZE_HANDLE_SIZE,
+        Player.RESIZE_HANDLE_SIZE,
+        Player.RESIZE_HANDLE_SIZE
       );
 
       // Encode and send to MSE
@@ -610,7 +608,7 @@ class MSEPlayer {
     const bufferAhead: number = this.#getVideoBufferAhead();
 
     // Fetch more if buffer is below threshold
-    if (bufferAhead < MSEPlayer.MAX_BUFFER_SEC) {
+    if (bufferAhead < Player.MAX_BUFFER_SEC) {
       // Fetch a few chunks from each stream
       if (!this.#stream1.isEnded) {
         this.#stream1.fetchNextChunk();
@@ -643,9 +641,9 @@ class MSEPlayer {
 
     const isInResizeHandle = (x: number, y: number): boolean => {
       return (
-        x >= this.#pipX + this.#pipWidth - MSEPlayer.RESIZE_HANDLE_SIZE &&
+        x >= this.#pipX + this.#pipWidth - Player.RESIZE_HANDLE_SIZE &&
         x <= this.#pipX + this.#pipWidth &&
-        y >= this.#pipY + this.#pipHeight - MSEPlayer.RESIZE_HANDLE_SIZE &&
+        y >= this.#pipY + this.#pipHeight - Player.RESIZE_HANDLE_SIZE &&
         y <= this.#pipY + this.#pipHeight
       );
     };
@@ -678,11 +676,8 @@ class MSEPlayer {
         this.#pipX = Math.max(0, Math.min(this.#width - this.#pipWidth, x - dragOffsetX));
         this.#pipY = Math.max(0, Math.min(this.#height - this.#pipHeight, y - dragOffsetY));
       } else if (isResizing) {
-        this.#pipWidth = Math.max(MSEPlayer.MIN_PIP_SIZE, Math.min(this.#width - this.#pipX, x - this.#pipX));
-        this.#pipHeight = Math.max(
-          MSEPlayer.MIN_PIP_SIZE,
-          Math.min(this.#height - this.#pipY, y - this.#pipY)
-        );
+        this.#pipWidth = Math.max(Player.MIN_PIP_SIZE, Math.min(this.#width - this.#pipX, x - this.#pipX));
+        this.#pipHeight = Math.max(Player.MIN_PIP_SIZE, Math.min(this.#height - this.#pipY, y - this.#pipY));
       }
     };
 
@@ -696,7 +691,7 @@ class MSEPlayer {
       // Switch audio source
       this.setActiveAudioSource(this.#swapped ? 'dash2' : 'dash1');
       // eslint-disable-next-line no-console
-      console.log(`[MSEPlayer] Swapped - audio now: ${this.#swapped ? 'dash2' : 'dash1'}`);
+      console.log(`[Player] Swapped - audio now: ${this.#swapped ? 'dash2' : 'dash1'}`);
     };
 
     this.#videoElement.addEventListener('mousedown', handleMouseDown);
@@ -727,7 +722,7 @@ class MSEPlayer {
         this.#videoSourceBuffer.appendBuffer(data as BufferSource);
       } catch (e) {
         // eslint-disable-next-line no-console
-        console.error('[MSEPlayer] Video appendBuffer error:', e);
+        console.error('[Player] Video appendBuffer error:', e);
         this.#isVideoAppending = false;
       }
     }
@@ -754,7 +749,7 @@ class MSEPlayer {
         this.#audioSourceBuffer.appendBuffer(data as BufferSource);
       } catch (e) {
         // eslint-disable-next-line no-console
-        console.error('[MSEPlayer] Audio appendBuffer error:', e);
+        console.error('[Player] Audio appendBuffer error:', e);
         this.#isAudioAppending = false;
       }
     }
@@ -770,11 +765,11 @@ class MSEPlayer {
       if (this.#videoElement.paused && buffered.length > 0 && buffered.end(0) > 0.5) {
         // eslint-disable-next-line no-console
         console.log(
-          `[MSEPlayer] Attempting to play - video buffered: ${buffered.end(0).toFixed(2)}s, readyState: ${this.#videoElement.readyState}`
+          `[Player] Attempting to play - video buffered: ${buffered.end(0).toFixed(2)}s, readyState: ${this.#videoElement.readyState}`
         );
         this.#videoElement.play().catch((e: Error) => {
           // eslint-disable-next-line no-console
-          console.warn('[MSEPlayer] Autoplay blocked:', e.message);
+          console.warn('[Player] Autoplay blocked:', e.message);
         });
       }
     }
@@ -791,4 +786,4 @@ class MSEPlayer {
   };
 }
 
-export default MSEPlayer;
+export default Player;

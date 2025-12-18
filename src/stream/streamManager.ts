@@ -1,7 +1,6 @@
+import Decoder, {type AudioSourceId} from '@decoder/decoder';
 import generateDash from '@generator/dash';
 import IEncodedChunk from '@interfaces/IEncodedChunk';
-
-import DashDecoder, {type AudioSourceId} from './DashDecoder';
 
 export interface DashStreamConfig {
   mpdUrl: string;
@@ -11,22 +10,22 @@ export interface DashStreamConfig {
 }
 
 /**
- * DashStreamManager - Manages DASH segment fetching for a single stream
+ * StreamManager - Manages DASH segment fetching for a single stream
  * MSEPlayer controls when to fetch via fetchNextChunk()
  */
-class DashStreamManager {
+class StreamManager {
   #config: DashStreamConfig;
-  #decoder: DashDecoder;
+  #decoder: Decoder;
   #dashGenerator: AsyncGenerator<{data: Uint8Array; type: 'video' | 'audio'}> | null = null;
   #isFetching: boolean = false;
   #isEnded: boolean = false;
 
   constructor(config: DashStreamConfig) {
     this.#config = config;
-    this.#decoder = new DashDecoder(config.sourceId, config.onAudioChunk, config.signal);
+    this.#decoder = new Decoder(config.sourceId, config.onAudioChunk, config.signal);
   }
 
-  get decoder(): DashDecoder {
+  get decoder(): Decoder {
     return this.#decoder;
   }
 
@@ -70,7 +69,7 @@ class DashStreamManager {
         this.#isEnded = true;
         this.#decoder.setEnded();
         // eslint-disable-next-line no-console
-        console.log(`[DashStreamManager] Stream ${this.#config.sourceId} ended`);
+        console.log(`[StreamManager] Stream ${this.#config.sourceId} ended`);
 
         return false;
       }
@@ -108,4 +107,4 @@ class DashStreamManager {
   };
 }
 
-export default DashStreamManager;
+export default StreamManager;
