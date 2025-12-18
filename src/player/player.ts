@@ -1,9 +1,11 @@
+import Dispatcher from '@dispatcher/dispatcher';
 import Encoder from '@encoder/encoder';
+import EEvent from '@enum/EEvent';
 import IEncodedChunk from '@interfaces/IEncodedChunk';
 import StreamManager from '@stream/streamManager';
 import {Muxer, StreamTarget} from 'webm-muxer';
 
-type AudioSourceId = 'source1' | 'source2';
+export type AudioSourceId = 'source1' | 'source2';
 
 class Player {
   #videoElementId: string;
@@ -11,6 +13,7 @@ class Player {
   #videoSourceBuffer: SourceBuffer | null = null;
   #audioSourceBuffer: SourceBuffer | null = null;
   #videoElement: HTMLVideoElement | null = null;
+  #dispatcher: Dispatcher;
 
   #videoMuxer: Muxer<StreamTarget> | null = null;
   #audioMuxer: Muxer<StreamTarget> | null = null;
@@ -54,11 +57,18 @@ class Player {
   static readonly MAX_BUFFER_AHEAD: number = 30;
   static readonly MAX_BUFFER_BEHIND: number = 10;
 
-  constructor(videoElementId: string, width: number = 640, height: number = 480, sampleRate: number = 48000) {
+  constructor(
+    videoElementId: string,
+    width: number,
+    height: number,
+    sampleRate: number,
+    dispatcher: Dispatcher
+  ) {
     this.#videoElementId = videoElementId;
     this.#width = width;
     this.#height = height;
     this.#sampleRate = sampleRate;
+    this.#dispatcher = dispatcher;
   }
 
   init = async (): Promise<void> => {
@@ -126,6 +136,8 @@ class Player {
     this.#createVideoMuxer();
     this.#createAudioMuxer();
 
+    this.#videoElement.addEventListener('timeupdate', this.#onTimeUpdate);
+
     // eslint-disable-next-line no-console
     console.log('[Player] Initialized with video:', videoMimeType, 'audio:', audioMimeType);
   };
@@ -157,7 +169,7 @@ class Player {
       this.#appendAudioChunk(chunk);
     });
 
-    // Create DASH stream managers (audio pulled directly from decoder buffers)
+    // Create DASH stream managers
     this.#stream1 = new StreamManager({
       mpdUrl: mpdUrl1,
       signal
@@ -237,6 +249,7 @@ class Player {
       }
     }
     if (this.#videoElement) {
+      this.#videoElement.removeEventListener('timeupdate', this.#onTimeUpdate);
       URL.revokeObjectURL(this.#videoElement.src);
       this.#videoElement.src = '';
     }
@@ -386,6 +399,8 @@ class Player {
     );
 
     this.#activeAudioSource = sourceId;
+
+    this.#dispatcher.emit(EEvent.changeSource, {source: sourceId});
 
     // Clear the audio buffer from currentTime onwards so new audio plays immediately
     if (this.#audioSourceBuffer && !this.#audioSourceBuffer.updating) {
@@ -772,15 +787,48 @@ class Player {
       }
     }
 
+    this.#emitBufferUpdate();
     this.#trimVideoBuffer();
 
     this.#appendVideo();
   };
 
   #onAudioUpdateEnd = (): void => {
+    this.#emitBufferUpdate();
     this.#trimAudioBuffer();
 
     this.#appendAudio();
+  };
+
+  #onTimeUpdate = (): void => {
+    if (!this.#videoElement) return;
+    this.#dispatcher.emit(EEvent.timeUpdate, {
+      currentTime: this.#videoElement.currentTime
+    });
+  };
+
+  #emitBufferUpdate = (): void => {
+    const videoRanges: Array<number> = [];
+    const audioRanges: Array<number> = [];
+
+    if (this.#videoSourceBuffer) {
+      const buffered: TimeRanges = this.#videoSourceBuffer.buffered;
+      for (let i: number = 0; i < buffered.length; i++) {
+        videoRanges.push(buffered.start(i), buffered.end(i));
+      }
+    }
+
+    if (this.#audioSourceBuffer) {
+      const buffered: TimeRanges = this.#audioSourceBuffer.buffered;
+      for (let i: number = 0; i < buffered.length; i++) {
+        audioRanges.push(buffered.start(i), buffered.end(i));
+      }
+    }
+
+    this.#dispatcher.emit(EEvent.bufferUpdate, {
+      video: videoRanges,
+      audio: audioRanges
+    });
   };
 
   /**

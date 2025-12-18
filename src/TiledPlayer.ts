@@ -1,3 +1,5 @@
+import Dispatcher from '@dispatcher/dispatcher';
+import IEvents from '@interfaces/IEvents';
 import Player from '@player/player';
 
 // DASH stream URLs
@@ -7,15 +9,24 @@ const DASH_URL_2: string =
 
 class TiledPlayer {
   #player: Player | null = null;
+  #dispatcher: Dispatcher = new Dispatcher();
 
   load = async (): Promise<void> => {
-    this.#player = new Player('tiled-player', 640, 480, 48000);
+    this.#player = new Player('tiled-player', 640, 480, 48000, this.#dispatcher);
     await this.#player.init();
 
     await this.#player.load(DASH_URL_1, DASH_URL_2);
 
     this.#player.dispose();
   };
+
+  on<K extends keyof IEvents>(evtName: K, callback: (evt: IEvents[K]) => void): void {
+    this.#dispatcher.on(evtName, callback);
+  }
+
+  off<K extends keyof IEvents>(event: K, callback: (evt: IEvents[K]) => void): void {
+    this.#dispatcher.off(event, callback);
+  }
 
   destroy = (): void => {
     this.#player?.dispose();

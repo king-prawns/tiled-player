@@ -1,10 +1,27 @@
 body {
   background-color: #46b27e;
   color: #202124;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
 button {
   cursor: pointer;
+  padding: 8px 16px;
+  margin-right: 8px;
+  border: none;
+  border-radius: 4px;
+  background-color: #202124;
+  color: white;
+  font-size: 14px;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button:not(:disabled):hover {
+  background-color: #3a3a3d;
 }
 
 .video-container h3 {
@@ -13,4 +30,51 @@ button {
 
 .video-container video {
   border: 1px solid #202124;
+  border-radius: 4px;
+}
+
+.buffer-info {
+  margin-top: 12px;
+  padding: 12px;
+  background-color: rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  width: 640px;
+  box-sizing: border-box;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.info-row:last-child {
+  border-bottom: none;
+}
+
+.label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.value {
+  font-size: 13px;
+}
+
+.value.mono {
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  background-color: rgba(0, 0, 0, 0.1);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.value.highlight {
+  background-color: #202124;
+  color: #46b27e;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-weight: 600;
 }
