@@ -1,24 +1,11 @@
-import IEncodedAudioChunk from '@interfaces/IEncodedAudioChunk';
-import IEncodedChunk from '@interfaces/IEncodedChunk';
-
-// Sample DASH MPD URL (Big Buck Bunny - clear, no DRM)
-const DEFAULT_MPD_URL: string = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd';
-
-interface DashSegment {
+export interface DashSegment {
   url: string;
   timestamp: number;
   duration: number;
   byteRange?: string; // For SegmentBase (on-demand)
 }
 
-interface DashChunk {
-  type: 'video' | 'audio';
-  data: Uint8Array;
-  timestamp: number;
-  isInit: boolean;
-}
-
-interface ParsedDash {
+export interface ParsedDash {
   videoSegments: Array<DashSegment>;
   audioSegments: Array<DashSegment>;
   videoInitUrl: string;
@@ -34,7 +21,7 @@ interface ParsedDash {
  * Supports both SegmentTemplate (live/chunked) and SegmentBase (on-demand)
  * Prefers Opus audio over AAC when available
  */
-async function parseMPD(mpdUrl: string, preferOpus: boolean = false): Promise<ParsedDash> {
+async function parseMPD(mpdUrl: string): Promise<ParsedDash> {
   const response: Response = await fetch(mpdUrl);
   const mpdText: string = await response.text();
   const parser: DOMParser = new DOMParser();
@@ -47,22 +34,8 @@ async function parseMPD(mpdUrl: string, preferOpus: boolean = false): Promise<Pa
     'AdaptationSet[mimeType="video/mp4"], AdaptationSet[contentType="video"]'
   );
 
-  // Find audio AdaptationSet - prefer Opus if requested
+  // Find audio AdaptationSet
   let audioAdaptation: Element | null = null;
-  if (preferOpus) {
-    // Try to find Opus audio first
-    const allAudioAdaptations = Array.from(
-      mpd.querySelectorAll('AdaptationSet[contentType="audio"], AdaptationSet[mimeType^="audio"]')
-    );
-    for (const adapt of allAudioAdaptations) {
-      const rep = adapt.querySelector('Representation');
-      const codec = rep?.getAttribute('codecs') || '';
-      if (codec.toLowerCase().includes('opus')) {
-        audioAdaptation = adapt;
-        break;
-      }
-    }
-  }
   // Fallback to any audio
   if (!audioAdaptation) {
     audioAdaptation = mpd.querySelector(
@@ -117,15 +90,31 @@ async function parseMPD(mpdUrl: string, preferOpus: boolean = false): Promise<Pa
                 timestamp: ((t + i * d) / timescale) * 1_000_000,
                 duration: (d / timescale) * 1_000_000
               });
-              if (result.videoSegments.length >= 10) break;
             }
             time = t + (r + 1) * d;
-            if (result.videoSegments.length >= 10) return;
           });
         } else if (duration > 0) {
           // Duration-based mode (using $Number$)
+          // Get total duration from MPD to calculate segment count
+          const mediaPresentationDuration: string | null =
+            mpd.documentElement.getAttribute('mediaPresentationDuration');
+          let totalDurationSec: number = 600; // Default fallback: 10 minutes
+          if (mediaPresentationDuration) {
+            // Parse ISO 8601 duration
+            // Supports formats like "PT634.566S", "PT10M34.566S", "P0Y0M0DT0H3M30.000S"
+            const match: RegExpMatchArray | null = mediaPresentationDuration.match(
+              /P(?:\d+Y)?(?:\d+M)?(?:\d+D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/
+            );
+            if (match) {
+              const hours: number = parseFloat(match[1] || '0');
+              const minutes: number = parseFloat(match[2] || '0');
+              const seconds: number = parseFloat(match[3] || '0');
+              totalDurationSec = hours * 3600 + minutes * 60 + seconds;
+            }
+          }
           const segmentDurationSec: number = duration / timescale;
-          for (let num: number = startNumber; num < startNumber + 10; num++) {
+          const totalSegments: number = Math.ceil(totalDurationSec / segmentDurationSec);
+          for (let num: number = startNumber; num < startNumber + totalSegments; num++) {
             const segUrl: string =
               baseUrl +
               mediaTemplate.replace(/\$RepresentationID\$/g, repId).replace('$Number$', String(num));
@@ -178,15 +167,31 @@ async function parseMPD(mpdUrl: string, preferOpus: boolean = false): Promise<Pa
                 timestamp: ((t + i * d) / timescale) * 1_000_000,
                 duration: (d / timescale) * 1_000_000
               });
-              if (result.audioSegments.length >= 10) break;
             }
             time = t + (r + 1) * d;
-            if (result.audioSegments.length >= 10) return;
           });
         } else if (duration > 0) {
           // Duration-based mode (using $Number$)
+          // Get total duration from MPD to calculate segment count
+          const mediaPresentationDuration: string | null =
+            mpd.documentElement.getAttribute('mediaPresentationDuration');
+          let totalDurationSec: number = 600; // Default fallback: 10 minutes
+          if (mediaPresentationDuration) {
+            // Parse ISO 8601 duration
+            // Supports formats like "PT634.566S", "PT10M34.566S", "P0Y0M0DT0H3M30.000S"
+            const match: RegExpMatchArray | null = mediaPresentationDuration.match(
+              /P(?:\d+Y)?(?:\d+M)?(?:\d+D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/
+            );
+            if (match) {
+              const hours: number = parseFloat(match[1] || '0');
+              const minutes: number = parseFloat(match[2] || '0');
+              const seconds: number = parseFloat(match[3] || '0');
+              totalDurationSec = hours * 3600 + minutes * 60 + seconds;
+            }
+          }
           const segmentDurationSec: number = duration / timescale;
-          for (let num: number = startNumber; num < startNumber + 10; num++) {
+          const totalSegments: number = Math.ceil(totalDurationSec / segmentDurationSec);
+          for (let num: number = startNumber; num < startNumber + totalSegments; num++) {
             const segUrl: string =
               baseUrl +
               mediaTemplate.replace(/\$RepresentationID\$/g, repId).replace('$Number$', String(num));
@@ -204,120 +209,4 @@ async function parseMPD(mpdUrl: string, preferOpus: boolean = false): Promise<Pa
   return result;
 }
 
-/**
- * Fetch a segment and return its data
- */
-async function fetchSegment(url: string): Promise<Uint8Array> {
-  const response: Response = await fetch(url);
-  const buffer: ArrayBuffer = await response.arrayBuffer();
-
-  return new Uint8Array(buffer);
-}
-
-export interface DashGeneratorOptions {
-  mpdUrl?: string;
-  signal?: AbortSignal;
-  preferOpus?: boolean;
-  onVideoChunk?: (chunk: IEncodedChunk) => void;
-  onAudioChunk?: (chunk: IEncodedAudioChunk) => void;
-}
-
-/**
- * DASH Generator - fetches MPD manifest and yields video/audio chunks
- * Retrieves 10 video and 10 audio segments from a clear (non-DRM) DASH stream
- */
-async function* generateDash(options: DashGeneratorOptions = {}): AsyncGenerator<DashChunk> {
-  const mpdUrl: string = options.mpdUrl ?? DEFAULT_MPD_URL;
-
-  // eslint-disable-next-line no-console
-  console.log('[DASH] Fetching MPD manifest:', mpdUrl);
-
-  const parsed: ParsedDash = await parseMPD(mpdUrl, options.preferOpus);
-  const {videoSegments, audioSegments, videoInitUrl, audioInitUrl, audioCodec} = parsed;
-
-  // eslint-disable-next-line no-console
-  console.log(`[DASH] Found ${videoSegments.length} video segments, ${audioSegments.length} audio segments`);
-  // eslint-disable-next-line no-console
-  if (audioCodec) console.log(`[DASH] Audio codec: ${audioCodec}`);
-
-  // Fetch and yield video init segment
-  if (videoInitUrl) {
-    // eslint-disable-next-line no-console
-    console.log('[DASH] Fetching video init segment:', videoInitUrl);
-    const initData: Uint8Array = await fetchSegment(videoInitUrl);
-    yield {type: 'video', data: initData, timestamp: 0, isInit: true};
-  }
-
-  // Fetch and yield audio init segment
-  if (audioInitUrl) {
-    // eslint-disable-next-line no-console
-    console.log('[DASH] Fetching audio init segment:', audioInitUrl);
-    const initData: Uint8Array = await fetchSegment(audioInitUrl);
-    yield {type: 'audio', data: initData, timestamp: 0, isInit: true};
-  }
-
-  // Fetch video and audio segments interleaved
-  const maxSegments: number = Math.max(videoSegments.length, audioSegments.length);
-
-  for (let i: number = 0; i < maxSegments; i++) {
-    if (options.signal?.aborted) break;
-
-    // Fetch video segment
-    if (i < videoSegments.length) {
-      const seg: DashSegment = videoSegments[i];
-      // eslint-disable-next-line no-console
-      console.log(`[DASH] Fetching video segment ${i + 1}/${videoSegments.length}`);
-      // eslint-disable-next-line no-await-in-loop
-      const data: Uint8Array = await fetchSegment(seg.url);
-
-      const chunk: DashChunk = {
-        type: 'video',
-        data,
-        timestamp: seg.timestamp,
-        isInit: false
-      };
-      yield chunk;
-
-      // Call callback if provided
-      if (options.onVideoChunk) {
-        options.onVideoChunk({
-          timestamp: seg.timestamp,
-          key: i === 0, // First segment is keyframe
-          data
-        });
-      }
-    }
-
-    // Fetch audio segment
-    if (i < audioSegments.length) {
-      const seg: DashSegment = audioSegments[i];
-      // eslint-disable-next-line no-console
-      console.log(`[DASH] Fetching audio segment ${i + 1}/${audioSegments.length}`);
-      // eslint-disable-next-line no-await-in-loop
-      const data: Uint8Array = await fetchSegment(seg.url);
-
-      const chunk: DashChunk = {
-        type: 'audio',
-        data,
-        timestamp: seg.timestamp,
-        isInit: false
-      };
-      yield chunk;
-
-      // Call callback if provided
-      if (options.onAudioChunk) {
-        options.onAudioChunk({
-          timestamp: seg.timestamp,
-          duration: seg.duration,
-          data
-        });
-      }
-    }
-  }
-
-  // eslint-disable-next-line no-console
-  console.log('[DASH] Finished fetching all segments');
-}
-
-export default generateDash;
-export {DashChunk, DashSegment, parseMPD};
+export default parseMPD;

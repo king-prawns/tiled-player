@@ -14,11 +14,14 @@
     "outDir": "../../dist",
     "baseUrl": "../../",
     "paths": {
-      "@generator/*": ["./src/generator/*"],
+      "@enum/*": ["./src/enum/*"],
       "@decoder/*": ["./src/decoder/*"],
+      "@dispatcher/*": ["./src/dispatcher/*"],
       "@encoder/*": ["./src/encoder/*"],
       "@interfaces/*": ["./src/interfaces/*"],
-      "@mse/*": ["./src/mse/*"]
+      "@parser/*": ["./src/parser/*"],
+      "@player/*": ["./src/player/*"],
+      "@stream/*": ["./src/stream/*"]
     }
   },
   "include": ["../../src/**/*", "../../sandbox/**/*"]

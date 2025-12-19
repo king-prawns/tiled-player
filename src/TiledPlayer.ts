@@ -1,68 +1,32 @@
-// import Decoder from '@decoder/decoder';
-import Encoder from '@encoder/encoder';
-// import generateCamera from '@generator/camera';
-// import generateMerge, {MergeOptions} from '@generator/merge';
-import generateMergeDash, {AudioSourceId, IEncodedAudioChunk, MergeDashOptions} from '@generator/mergeDash';
-// import generateVideo from '@generator/video';
-import IEncodedChunk from '@interfaces/IEncodedChunk';
-import {MSEPlayer} from '@mse/index';
+import Dispatcher from '@dispatcher/dispatcher';
+import IEvents from '@interfaces/IEvents';
+import Player from '@player/player';
+
+const DASH_URL_1: string = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd';
+const DASH_URL_2: string =
+  'https://bitmovin-a.akamaihd.net/content/MI201109210084_1/mpds/f08e80da-bf1d-4e3d-8899-f0f6155f6efa.mpd';
 
 class TiledPlayer {
-  #abortController: AbortController | null = null;
-  #msePlayer: MSEPlayer | null = null;
+  #player: Player | null = null;
+  #dispatcher: Dispatcher = new Dispatcher();
 
   load = async (): Promise<void> => {
-    this.#abortController = new AbortController();
+    this.#player = new Player('tiled-player', 640, 480, this.#dispatcher);
+    await this.#player.init();
 
-    // Initialize MSE player for merged output (video + audio)
-    this.#msePlayer = new MSEPlayer('tiled-player', 640, 480, 48000);
-    await this.#msePlayer.init();
-
-    // Run merge pipeline
-    await this.#runMergePipeline();
-
-    this.#msePlayer.dispose();
+    await this.#player.load(DASH_URL_1, DASH_URL_2);
   };
+
+  on<K extends keyof IEvents>(evtName: K, callback: (evt: IEvents[K]) => void): void {
+    this.#dispatcher.on(evtName, callback);
+  }
+
+  off<K extends keyof IEvents>(event: K, callback: (evt: IEvents[K]) => void): void {
+    this.#dispatcher.off(event, callback);
+  }
 
   destroy = (): void => {
-    this.#abortController?.abort();
-    this.#msePlayer?.dispose();
-  };
-
-  /**
-   * Merge pipeline: composites two DASH streams and sends to MSE player
-   */
-  #runMergePipeline = async (): Promise<void> => {
-    const videoEncoder: Encoder = new Encoder();
-    await videoEncoder.init();
-
-    // Send encoded video chunks to MSE player
-    videoEncoder.onChunk((chunk: IEncodedChunk) => {
-      this.#msePlayer?.appendVideoChunk(chunk);
-    });
-
-    // Options for merge generator
-    const mergeOptions: MergeDashOptions = {
-      signal: this.#abortController?.signal,
-      onSwap: (swapped: boolean) => {
-        // When swapped: dash2 is background (active), dash1 is PiP
-        // When not swapped: dash1 is background (active), dash2 is PiP
-        const activeSource: AudioSourceId = swapped ? 'dash2' : 'dash1';
-        this.#msePlayer?.setActiveAudioSource(activeSource);
-        // eslint-disable-next-line no-console
-        console.log(`[WebCodecs] Audio switched to ${activeSource}`);
-      },
-      onAudioChunk: (chunk: IEncodedAudioChunk, sourceId: AudioSourceId) => {
-        this.#msePlayer?.appendAudioChunk(chunk, sourceId);
-      }
-    };
-
-    // Encode all frames from merge generator
-    for await (const videoFrame of generateMergeDash(mergeOptions)) {
-      videoEncoder.encode(videoFrame);
-    }
-
-    await videoEncoder.flush();
+    this.#player?.dispose();
   };
 }
 
