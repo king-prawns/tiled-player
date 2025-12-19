@@ -1,18 +1,23 @@
 import Decoder from '@decoder/decoder';
+import {SourceId} from '@player/player';
 
 import StreamDownloader, {SegmentReady} from './streamDownloader';
 
 interface StreamConfig {
   mpdUrl: string;
+  sourceId: SourceId;
   signal: AbortSignal;
+  onAudioSegmentReady: (SegmentReady: SegmentReady, sourceId: SourceId) => void;
 }
 
 class StreamManager {
+  #config: StreamConfig;
   #decoder: Decoder;
   #downloader: StreamDownloader;
   #ended: boolean = false;
 
   constructor(config: StreamConfig) {
+    this.#config = config;
     this.#decoder = new Decoder(config.signal);
     this.#downloader = new StreamDownloader({
       mpdUrl: config.mpdUrl,
@@ -41,8 +46,12 @@ class StreamManager {
 
   #onSegmentReady = (): void => {
     const segment: SegmentReady | undefined = this.#downloader.getReadySegment();
-    if (segment) {
-      this.#decoder.feedData(segment.data, segment.type);
+    if (!segment) return;
+
+    if (segment.type === 'video') {
+      this.#decoder.feedData(segment.data);
+    } else {
+      this.#config.onAudioSegmentReady(segment, this.#config.sourceId);
     }
   };
 }

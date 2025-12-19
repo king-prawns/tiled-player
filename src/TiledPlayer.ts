@@ -11,7 +11,7 @@ class TiledPlayer {
   #dispatcher: Dispatcher = new Dispatcher();
 
   load = async (): Promise<void> => {
-    this.#player = new Player('tiled-player', 640, 480, 48000, this.#dispatcher);
+    this.#player = new Player('tiled-player', 640, 480, this.#dispatcher);
     await this.#player.init();
 
     await this.#player.load(DASH_URL_1, DASH_URL_2);
