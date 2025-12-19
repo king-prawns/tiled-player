@@ -296,18 +296,16 @@ class Player {
   };
 
   /**
-   * Get the video buffer ahead in seconds
-   * Returns how many seconds of video are buffered ahead of current playback position
+   * Get buffer ahead in seconds for a given SourceBuffer
    */
-  #getVideoBufferAhead = (): number => {
-    if (!this.#videoElement || !this.#videoSourceBuffer) {
+  #getBufferAhead = (sourceBuffer: SourceBuffer | null): number => {
+    if (!this.#videoElement || !sourceBuffer) {
       return 0;
     }
 
     const currentTime: number = this.#videoElement.currentTime;
-    const buffered: TimeRanges = this.#videoSourceBuffer.buffered;
+    const buffered: TimeRanges = sourceBuffer.buffered;
 
-    // Find the buffer range that contains currentTime
     for (let i: number = 0; i < buffered.length; i++) {
       const start: number = buffered.start(i);
       const end: number = buffered.end(i);
@@ -319,6 +317,10 @@ class Player {
 
     return 0;
   };
+
+  #getVideoBufferAhead = (): number => this.#getBufferAhead(this.#videoSourceBuffer);
+
+  #getAudioBufferAhead = (): number => this.#getBufferAhead(this.#audioSourceBuffer);
 
   #createVideoMuxer = (): void => {
     if (this.#videoMuxer) {
@@ -581,11 +583,14 @@ class Player {
   #maintainBuffer = (): void => {
     if (!this.#stream1 || !this.#stream2) return;
 
-    const bufferAhead: number = this.#getVideoBufferAhead();
+    const videoBufferAhead: number = this.#getVideoBufferAhead();
+    const audioBufferAhead: number = this.#getAudioBufferAhead();
 
-    // Fetch more if buffer is below threshold
-    if (bufferAhead < Player.MAX_BUFFER_AHEAD) {
-      // Fetch a few chunks from each stream
+    // Fetch more only if BOTH video and audio buffers are below threshold
+    const shouldFetch: boolean =
+      videoBufferAhead < Player.MAX_BUFFER_AHEAD && audioBufferAhead < Player.MAX_BUFFER_AHEAD;
+
+    if (shouldFetch) {
       if (!this.#stream1.isEnded) {
         this.#stream1.fetchNextChunk();
       }
