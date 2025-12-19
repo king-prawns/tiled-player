@@ -19,23 +19,35 @@ interface StreamDownloaderConfig {
  * StreamDownloader - Downloads manifest and segments
  * Calls onSegmentReady callback when a segment is downloaded
  */
+
 class StreamDownloader {
   #config: StreamDownloaderConfig;
   #isEnded: boolean = false;
   #tickInterval: ReturnType<typeof setInterval> | null = null;
   #isFetching: boolean = false;
   #segmentGenerator: AsyncGenerator<SegmentReady> | null = null;
+  #queue: Array<SegmentReady> = [];
 
   #videoSegments: Array<DashSegment> = [];
   #audioSegments: Array<DashSegment> = [];
+
+  static readonly MAX_QUEUE_SIZE: number = 4;
 
   constructor(config: StreamDownloaderConfig) {
     this.#config = config;
   }
 
   get isEnded(): boolean {
-    return this.#isEnded;
+    return this.#isEnded && this.#queue.length === 0;
   }
+
+  get queueLength(): number {
+    return this.#queue.length;
+  }
+
+  getReadySegment = (): SegmentReady | undefined => {
+    return this.#queue.shift();
+  };
 
   stop = (): void => {
     if (this.#tickInterval) {
@@ -47,6 +59,7 @@ class StreamDownloader {
   destroy = (): void => {
     this.stop();
     this.#isEnded = true;
+    this.#queue = [];
   };
 
   start = (): void => {
@@ -64,6 +77,10 @@ class StreamDownloader {
       return;
     }
 
+    if (this.#queue.length >= StreamDownloader.MAX_QUEUE_SIZE) {
+      return;
+    }
+
     this.#fetchNextSegment();
   };
 
@@ -73,28 +90,19 @@ class StreamDownloader {
     }
 
     this.#isFetching = true;
-    // eslint-disable-next-line no-console
-    console.log(`[StreamDownloader] Fetching next segment...`);
 
     try {
       const result: IteratorResult<SegmentReady> = await this.#segmentGenerator.next();
-      // eslint-disable-next-line no-console
-      console.log(`[StreamDownloader] Generator returned, done=${result.done}`);
 
       if (result.done) {
         this.#isEnded = true;
         this.stop();
-        // eslint-disable-next-line no-console
-        console.log(`[StreamDownloader] Stream ended: ${this.#config.mpdUrl}`);
 
         return;
       }
 
-      const segmentReady: SegmentReady = result.value;
-      // eslint-disable-next-line no-console
-      console.log(`[StreamDownloader] Got chunk: type=${segmentReady.type}, isInit=${segmentReady.isInit}`);
-
-      this.#config.onSegmentReady(segmentReady);
+      this.#queue.push(result.value);
+      this.#config.onSegmentReady(result.value);
     } catch (e) {
       if (!this.#config.signal.aborted) {
         // eslint-disable-next-line no-console
@@ -106,37 +114,25 @@ class StreamDownloader {
   };
 
   #fetchManifest = async (): Promise<void> => {
-    // eslint-disable-next-line no-console
-    console.log('[Generator] Fetching MPD manifest:', this.#config.mpdUrl);
-
     const parsed: ParsedDash = await parseMPD(this.#config.mpdUrl);
     const {videoSegments, audioSegments, videoInitUrl, audioInitUrl} = parsed;
 
     this.#videoSegments = videoSegments;
     this.#audioSegments = audioSegments;
 
-    // Fetch and yield video init segment
     if (videoInitUrl) {
-      // eslint-disable-next-line no-console
-      console.log('[Generator] Fetching video init segment:', videoInitUrl);
       const initData: Uint8Array = await this.#fetchSegment(videoInitUrl);
-      const segmentReady: SegmentReady = {type: 'video', data: initData, timestamp: 0, isInit: true};
-      this.#config.onSegmentReady(segmentReady);
+      const segment: SegmentReady = {type: 'video', data: initData, timestamp: 0, isInit: true};
+      this.#queue.push(segment);
+      this.#config.onSegmentReady(segment);
     }
 
-    // Fetch and yield audio init segment
     if (audioInitUrl) {
-      // eslint-disable-next-line no-console
-      console.log('[Generator] Fetching audio init segment:', audioInitUrl);
       const initData: Uint8Array = await this.#fetchSegment(audioInitUrl);
-      const segmentReady: SegmentReady = {type: 'audio', data: initData, timestamp: 0, isInit: true};
-      this.#config.onSegmentReady(segmentReady);
+      const segment: SegmentReady = {type: 'audio', data: initData, timestamp: 0, isInit: true};
+      this.#queue.push(segment);
+      this.#config.onSegmentReady(segment);
     }
-
-    // eslint-disable-next-line no-console
-    console.log(
-      `[Generator] Found ${videoSegments.length} video segments, ${audioSegments.length} audio segments`
-    );
   };
 
   async *#fetchSegments(): AsyncGenerator<SegmentReady> {

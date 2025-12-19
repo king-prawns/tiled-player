@@ -59,6 +59,7 @@ class Player {
   // Compositor constants
   static readonly MIN_PIP_SIZE: number = 80;
   static readonly RESIZE_HANDLE_SIZE: number = 15;
+
   static readonly MAX_BUFFER_AHEAD: number = 30;
   static readonly MAX_BUFFER_BEHIND: number = 10;
 
@@ -158,14 +159,14 @@ class Player {
     this.#videoEncoder = new Encoder('video');
     await this.#videoEncoder.init({width: this.#width, height: this.#height});
     this.#videoEncoder.onChunk((chunk: IEncodedChunk) => {
-      this.#appendVideoChunk(chunk);
+      this.#muxVideoChunk(chunk);
     });
 
     // Create audio encoder (re-encode decoded AudioData to Opus)
     this.#audioEncoder = new Encoder('audio');
     await this.#audioEncoder.init({sampleRate: this.#sampleRate});
     this.#audioEncoder.onChunk((chunk: IEncodedChunk) => {
-      this.#appendAudioChunk(chunk);
+      this.#muxAudioChunk(chunk);
     });
 
     // Create stream managers
@@ -260,7 +261,7 @@ class Player {
     this.#audioPendingChunks = [];
   };
 
-  #appendVideoChunk = (chunk: IEncodedChunk): void => {
+  #muxVideoChunk = (chunk: IEncodedChunk): void => {
     if (this.#disposed || !this.#videoMuxer) {
       return;
     }
@@ -277,7 +278,7 @@ class Player {
     this.#videoMuxer.addVideoChunk(encodedChunk, undefined, chunk.timestamp);
   };
 
-  #appendAudioChunk = (chunk: IEncodedChunk): void => {
+  #muxAudioChunk = (chunk: IEncodedChunk): void => {
     if (this.#disposed || !this.#audioMuxer) {
       return;
     }
@@ -365,7 +366,6 @@ class Player {
     const newBuffer: Array<AudioData> | undefined = this.#cachedAudioData.get(sourceId);
     const oldBuffer: Array<AudioData> | undefined = this.#cachedAudioData.get(oldSource);
 
-    // Get ACTUAL playback position (not buffered position)
     const currentTime: number = this.#videoElement?.currentTime ?? 0;
     const currentTimeUs: number = currentTime * 1_000_000;
 
@@ -456,9 +456,26 @@ class Player {
     this.#animationFrameId = requestAnimationFrame(this.#compositorTick);
   };
 
-  /**
-   * Single tick of the compositor loop
-   */
+  #getBufferAhead = (sourceBuffer: SourceBuffer | null): number => {
+    if (!this.#videoElement || !sourceBuffer) {
+      return 0;
+    }
+
+    const currentTime: number = this.#videoElement.currentTime;
+    const buffered: TimeRanges = sourceBuffer.buffered;
+
+    for (let i: number = 0; i < buffered.length; i++) {
+      const start: number = buffered.start(i);
+      const end: number = buffered.end(i);
+
+      if (currentTime >= start && currentTime <= end) {
+        return end - currentTime;
+      }
+    }
+
+    return 0;
+  };
+
   #compositorTick = (timestamp: number): void => {
     const signal: AbortSignal | undefined = this.#abortController?.signal;
     if (signal?.aborted || this.#disposed || !this.#stream1 || !this.#stream2) {
@@ -473,7 +490,6 @@ class Player {
     }
     this.#lastFrameTime = timestamp;
 
-    // Pull decoded audio data from both decoders and encode them
     this.#pullAudioData();
 
     // Get frames from decoders
@@ -693,6 +709,10 @@ class Player {
       return;
     }
 
+    if (this.#getBufferAhead(this.#videoSourceBuffer) > Player.MAX_BUFFER_AHEAD) {
+      return;
+    }
+
     const data: Uint8Array | undefined = this.#videoPendingChunks.shift();
     if (data) {
       try {
@@ -710,6 +730,10 @@ class Player {
     }
 
     if (this.#audioSourceBuffer.updating) {
+      return;
+    }
+
+    if (this.#getBufferAhead(this.#audioSourceBuffer) > Player.MAX_BUFFER_AHEAD) {
       return;
     }
 

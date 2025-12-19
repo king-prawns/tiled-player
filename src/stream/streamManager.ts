@@ -7,13 +7,9 @@ interface StreamConfig {
   signal: AbortSignal;
 }
 
-/**
- * StreamManager - Manages segment fetching and decoding
- */
 class StreamManager {
   #decoder: Decoder;
   #downloader: StreamDownloader;
-  #segmentsReceived: number = 0;
   #ended: boolean = false;
 
   constructor(config: StreamConfig) {
@@ -30,11 +26,7 @@ class StreamManager {
   }
 
   get isEnded(): boolean {
-    return this.#ended && this.#decoder.videoFrames.length === 0;
-  }
-
-  get segmentsReceived(): number {
-    return this.#segmentsReceived;
+    return this.#ended && this.#downloader.isEnded && this.#decoder.videoFrames.length === 0;
   }
 
   start = (): void => {
@@ -47,10 +39,11 @@ class StreamManager {
     this.#decoder.destroy();
   };
 
-  #onSegmentReady = (segment: SegmentReady): void => {
-    this.#segmentsReceived++;
-    // Feed directly to decoder - no queue needed
-    this.#decoder.feedData(segment.data, segment.type);
+  #onSegmentReady = (): void => {
+    const segment: SegmentReady | undefined = this.#downloader.getReadySegment();
+    if (segment) {
+      this.#decoder.feedData(segment.data, segment.type);
+    }
   };
 }
 
