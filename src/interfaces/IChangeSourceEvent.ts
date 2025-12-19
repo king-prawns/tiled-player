@@ -1,7 +1,7 @@
-import {AudioSourceId} from '@player/player';
+import {SourceId} from '@player/player';
 
 type IChangeSourceEvent = {
-  source: AudioSourceId;
+  source: SourceId;
 };
 
 export default IChangeSourceEvent;
