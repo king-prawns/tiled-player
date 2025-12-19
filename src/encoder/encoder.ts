@@ -46,10 +46,6 @@ class Encoder {
     }
   };
 
-  flush = async (): Promise<void> => {
-    await this.#encoder?.flush();
-  };
-
   destroy = (): void => {
     if (this.#encoder) {
       try {

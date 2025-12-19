@@ -41,10 +41,6 @@ class StreamDownloader {
     return this.#isEnded && this.#queue.length === 0;
   }
 
-  get queueLength(): number {
-    return this.#queue.length;
-  }
-
   getReadySegment = (): SegmentReady | undefined => {
     return this.#queue.shift();
   };
@@ -136,13 +132,11 @@ class StreamDownloader {
   };
 
   async *#fetchSegments(): AsyncGenerator<SegmentReady> {
-    // Fetch video and audio segments interleaved
     const maxSegments: number = Math.max(this.#videoSegments.length, this.#audioSegments.length);
 
     for (let i: number = 0; i < maxSegments; i++) {
       if (this.#config.signal?.aborted) break;
 
-      // Fetch video segment
       if (i < this.#videoSegments.length) {
         const seg: DashSegment = this.#videoSegments[i];
         // eslint-disable-next-line no-console
@@ -159,7 +153,6 @@ class StreamDownloader {
         yield chunk;
       }
 
-      // Fetch audio segment
       if (i < this.#audioSegments.length) {
         const seg: DashSegment = this.#audioSegments[i];
         // eslint-disable-next-line no-console
@@ -181,9 +174,6 @@ class StreamDownloader {
     console.log('[Generator] Finished fetching all segments');
   }
 
-  /**
-   * Fetch a segment and return its data
-   */
   async #fetchSegment(url: string): Promise<Uint8Array> {
     const response: Response = await fetch(url);
 

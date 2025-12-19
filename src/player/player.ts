@@ -83,13 +83,10 @@ class Player {
       throw new Error(`Video element not found: ${this.#videoElementId}`);
     }
 
-    // Create MediaSource
     this.#mediaSource = new MediaSource();
 
-    // Set video src to MediaSource object URL
     this.#videoElement.src = URL.createObjectURL(this.#mediaSource);
 
-    // Wait for MediaSource to be ready
     await new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
       if (!this.#mediaSource) return reject(new Error('MediaSource is null'));
 
@@ -187,7 +184,6 @@ class Player {
     // Setup mouse event handlers for PiP interaction
     this.#setupPip();
 
-    // Start the main loop
     this.#runCompositorLoop();
   };
 

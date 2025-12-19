@@ -2,7 +2,6 @@ import Dispatcher from '@dispatcher/dispatcher';
 import IEvents from '@interfaces/IEvents';
 import Player from '@player/player';
 
-// DASH stream URLs
 const DASH_URL_1: string = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd';
 const DASH_URL_2: string =
   'https://bitmovin-a.akamaihd.net/content/MI201109210084_1/mpds/f08e80da-bf1d-4e3d-8899-f0f6155f6efa.mpd';
