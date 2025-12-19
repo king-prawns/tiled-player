@@ -50,6 +50,11 @@ class Player {
   #pipY: number = 0;
   #pipWidth: number = 0;
   #pipHeight: number = 0;
+  #compositorCanvas: OffscreenCanvas | null = null;
+  #compositorCtx: OffscreenCanvasRenderingContext2D | null = null;
+  #frameCount: number = 0;
+  #lastFrameTime: number = 0;
+  #animationFrameId: number = 0;
 
   // Compositor constants
   static readonly MIN_PIP_SIZE: number = 80;
@@ -149,12 +154,6 @@ class Player {
     this.#abortController = new AbortController();
     const signal: AbortSignal = this.#abortController.signal;
 
-    // Initialize PiP position
-    this.#pipX = this.#width - this.#width / 3 - 10;
-    this.#pipY = this.#height - this.#height / 3 - 10;
-    this.#pipWidth = this.#width / 3;
-    this.#pipHeight = this.#height / 3;
-
     // Create video encoder (for composited frames)
     this.#videoEncoder = new Encoder('video');
     await this.#videoEncoder.init({width: this.#width, height: this.#height});
@@ -169,7 +168,7 @@ class Player {
       this.#appendAudioChunk(chunk);
     });
 
-    // Create DASH stream managers
+    // Create stream managers
     this.#stream1 = new StreamManager({
       mpdUrl: mpdUrl1,
       signal
@@ -180,21 +179,25 @@ class Player {
       signal
     });
 
-    // Initialize streams (fetch manifests)
-    await Promise.all([this.#stream1.init(), this.#stream2.init()]);
+    // Start manifest/segment fetching
+    this.#stream1.start();
+    this.#stream2.start();
 
     // Setup mouse event handlers for PiP interaction
-    this.#setupPipInteraction();
+    this.#setupPip();
 
     // Start the main loop
-    await this.#runMainLoop();
-
-    // Cleanup
-    await this.#videoEncoder?.flush();
+    this.#runCompositorLoop();
   };
 
   dispose = (): void => {
     this.#disposed = true;
+
+    // Cancel animation frame
+    if (this.#animationFrameId) {
+      cancelAnimationFrame(this.#animationFrameId);
+      this.#animationFrameId = 0;
+    }
 
     // Abort any ongoing fetches
     this.#abortController?.abort();
@@ -294,33 +297,6 @@ class Player {
     // Add audio chunk to muxer with adjusted timestamp
     this.#audioMuxer.addAudioChunk(encodedChunk, undefined, adjustedTimestamp);
   };
-
-  /**
-   * Get buffer ahead in seconds for a given SourceBuffer
-   */
-  #getBufferAhead = (sourceBuffer: SourceBuffer | null): number => {
-    if (!this.#videoElement || !sourceBuffer) {
-      return 0;
-    }
-
-    const currentTime: number = this.#videoElement.currentTime;
-    const buffered: TimeRanges = sourceBuffer.buffered;
-
-    for (let i: number = 0; i < buffered.length; i++) {
-      const start: number = buffered.start(i);
-      const end: number = buffered.end(i);
-
-      if (currentTime >= start && currentTime <= end) {
-        return end - currentTime;
-      }
-    }
-
-    return 0;
-  };
-
-  #getVideoBufferAhead = (): number => this.#getBufferAhead(this.#videoSourceBuffer);
-
-  #getAudioBufferAhead = (): number => this.#getBufferAhead(this.#audioSourceBuffer);
 
   #createVideoMuxer = (): void => {
     if (this.#videoMuxer) {
@@ -460,144 +436,111 @@ class Player {
     }
   };
 
-  /**
-   * Main loop - MSE player controls everything
-   */
-  #runMainLoop = async (): Promise<void> => {
-    const signal: AbortSignal | undefined = this.#abortController?.signal;
+  #runCompositorLoop = (): void => {
     if (!this.#stream1 || !this.#stream2) return;
 
     // eslint-disable-next-line no-console
-    console.log('[Player] Fetching initial segments...');
-
-    // Initial fetch - get enough frames to start
-    await this.#fetchUntilFramesAvailable(5);
-
-    // eslint-disable-next-line no-console
-    console.log('[Player] Starting compositor loop');
+    console.log('[Player] Starting compositor loop with requestAnimationFrame');
 
     // Create OffscreenCanvas for compositing
-    const canvas: OffscreenCanvas = new OffscreenCanvas(this.#width, this.#height);
-    const ctx: OffscreenCanvasRenderingContext2D | null = canvas.getContext('2d');
-    if (!ctx) {
+    this.#compositorCanvas = new OffscreenCanvas(this.#width, this.#height);
+    this.#compositorCtx = this.#compositorCanvas.getContext('2d');
+    if (!this.#compositorCtx) {
       throw new Error('Failed to get 2D context');
     }
 
+    this.#frameCount = 0;
+    this.#lastFrameTime = 0;
+
+    // Start the animation loop
+    this.#animationFrameId = requestAnimationFrame(this.#compositorTick);
+  };
+
+  /**
+   * Single tick of the compositor loop
+   */
+  #compositorTick = (timestamp: number): void => {
+    const signal: AbortSignal | undefined = this.#abortController?.signal;
+    if (signal?.aborted || this.#disposed || !this.#stream1 || !this.#stream2) {
+      return;
+    }
+
     const frameInterval: number = 1000 / 30;
-    let lastFrameTime: number = 0;
-    let frameCount: number = 0;
+    if (timestamp - this.#lastFrameTime < frameInterval) {
+      this.#animationFrameId = requestAnimationFrame(this.#compositorTick);
 
-    while (!signal?.aborted && !this.#disposed) {
-      const now: number = performance.now();
-      if (now - lastFrameTime < frameInterval) {
-        // eslint-disable-next-line no-await-in-loop
-        await new Promise((r: (value: unknown) => void): number => window.setTimeout(r, 5));
-        continue;
-      }
-      lastFrameTime = now;
-
-      // Check buffer and fetch more if needed
-      this.#maintainBuffer();
-
-      // Pull decoded audio data from both decoders and encode them
-      this.#pullAudioData();
-
-      // Get frames from decoders
-      const frame1: VideoFrame | undefined = this.#stream1.decoder.getVideoFrame();
-      const frame2: VideoFrame | undefined = this.#stream2.decoder.getVideoFrame();
-
-      if (!frame1 && !frame2) {
-        const bothEnded: boolean = this.#stream1.isEnded && this.#stream2.isEnded;
-        const noMoreFrames: boolean =
-          this.#stream1.decoder.videoFrames.length === 0 && this.#stream2.decoder.videoFrames.length === 0;
-
-        if (bothEnded && noMoreFrames) {
-          // eslint-disable-next-line no-console
-          console.log('[Player] Both streams ended');
-          break;
-        }
-        // eslint-disable-next-line no-await-in-loop
-        await new Promise((r: (value: unknown) => void): number => window.setTimeout(r, 10));
-        continue;
-      }
-
-      // Composite frames
-      const bgFrame: VideoFrame | undefined = this.#swapped ? frame2 : frame1;
-      const pipFrame: VideoFrame | undefined = this.#swapped ? frame1 : frame2;
-
-      if (bgFrame) {
-        ctx.drawImage(bgFrame, 0, 0, this.#width, this.#height);
-        bgFrame.close();
-      }
-
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(this.#pipX - 1, this.#pipY - 1, this.#pipWidth + 2, this.#pipHeight + 2);
-
-      if (pipFrame) {
-        ctx.drawImage(pipFrame, this.#pipX, this.#pipY, this.#pipWidth, this.#pipHeight);
-        pipFrame.close();
-      }
-
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-      ctx.fillRect(
-        this.#pipX + this.#pipWidth - Player.RESIZE_HANDLE_SIZE,
-        this.#pipY + this.#pipHeight - Player.RESIZE_HANDLE_SIZE,
-        Player.RESIZE_HANDLE_SIZE,
-        Player.RESIZE_HANDLE_SIZE
-      );
-
-      // Encode and send to MSE
-      const timestamp: number = frameCount * (1000000 / 30);
-      const videoFrame: VideoFrame = new VideoFrame(canvas, {timestamp});
-      this.#videoEncoder?.encode(videoFrame);
-      frameCount++;
+      return;
     }
+    this.#lastFrameTime = timestamp;
+
+    // Pull decoded audio data from both decoders and encode them
+    this.#pullAudioData();
+
+    // Get frames from decoders
+    const frame1: VideoFrame | undefined = this.#stream1.decoder.getVideoFrame();
+    const frame2: VideoFrame | undefined = this.#stream2.decoder.getVideoFrame();
+
+    if (!frame1 && !frame2) {
+      const bothEnded: boolean = this.#stream1.isEnded && this.#stream2.isEnded;
+      const noMoreFrames: boolean =
+        this.#stream1.decoder.videoFrames.length === 0 && this.#stream2.decoder.videoFrames.length === 0;
+
+      if (bothEnded && noMoreFrames) {
+        // eslint-disable-next-line no-console
+        console.log('[Player] Both streams ended');
+
+        return;
+      }
+      // No frames yet, continue waiting
+      this.#animationFrameId = requestAnimationFrame(this.#compositorTick);
+
+      return;
+    }
+
+    // Composite frames
+    this.#compositeFrame(frame1, frame2);
+
+    // Schedule next frame
+    this.#animationFrameId = requestAnimationFrame(this.#compositorTick);
   };
 
   /**
-   * Fetch segments until we have enough frames
+   * Composite video frames and encode to MSE
    */
-  #fetchUntilFramesAvailable = async (minFrames: number): Promise<void> => {
-    if (!this.#stream1 || !this.#stream2) return;
+  #compositeFrame = (frame1: VideoFrame | undefined, frame2: VideoFrame | undefined): void => {
+    if (!this.#compositorCtx || !this.#compositorCanvas) return;
 
-    while (
-      (this.#stream1.decoder.videoFrames.length < minFrames ||
-        this.#stream2.decoder.videoFrames.length < minFrames) &&
-      !this.#disposed
-    ) {
-      // eslint-disable-next-line no-await-in-loop
-      const hasMore1: boolean = await this.#stream1.fetchNextChunk();
-      // eslint-disable-next-line no-await-in-loop
-      const hasMore2: boolean = await this.#stream2.fetchNextChunk();
+    const ctx: OffscreenCanvasRenderingContext2D = this.#compositorCtx;
+    const bgFrame: VideoFrame | undefined = this.#swapped ? frame2 : frame1;
+    const pipFrame: VideoFrame | undefined = this.#swapped ? frame1 : frame2;
 
-      if (!hasMore1 && !hasMore2) break;
-      // eslint-disable-next-line no-await-in-loop
-      await new Promise((r: (value: unknown) => void): number => window.setTimeout(r, 10));
+    if (bgFrame) {
+      ctx.drawImage(bgFrame, 0, 0, this.#width, this.#height);
+      bgFrame.close();
     }
-  };
 
-  /**
-   * Maintain buffer - fetch more when buffer drops below threshold
-   */
-  #maintainBuffer = (): void => {
-    if (!this.#stream1 || !this.#stream2) return;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(this.#pipX - 1, this.#pipY - 1, this.#pipWidth + 2, this.#pipHeight + 2);
 
-    const videoBufferAhead: number = this.#getVideoBufferAhead();
-    const audioBufferAhead: number = this.#getAudioBufferAhead();
-
-    // Fetch more only if BOTH video and audio buffers are below threshold
-    const shouldFetch: boolean =
-      videoBufferAhead < Player.MAX_BUFFER_AHEAD && audioBufferAhead < Player.MAX_BUFFER_AHEAD;
-
-    if (shouldFetch) {
-      if (!this.#stream1.isEnded) {
-        this.#stream1.fetchNextChunk();
-      }
-      if (!this.#stream2.isEnded) {
-        this.#stream2.fetchNextChunk();
-      }
+    if (pipFrame) {
+      ctx.drawImage(pipFrame, this.#pipX, this.#pipY, this.#pipWidth, this.#pipHeight);
+      pipFrame.close();
     }
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.fillRect(
+      this.#pipX + this.#pipWidth - Player.RESIZE_HANDLE_SIZE,
+      this.#pipY + this.#pipHeight - Player.RESIZE_HANDLE_SIZE,
+      Player.RESIZE_HANDLE_SIZE,
+      Player.RESIZE_HANDLE_SIZE
+    );
+
+    // Encode and send to MSE
+    const frameTimestamp: number = this.#frameCount * (1000000 / 30);
+    const videoFrame: VideoFrame = new VideoFrame(this.#compositorCanvas, {timestamp: frameTimestamp});
+    this.#videoEncoder?.encode(videoFrame);
+    this.#frameCount++;
   };
 
   /**
@@ -656,8 +599,14 @@ class Player {
   /**
    * Setup mouse event handlers for PiP drag, resize, and swap
    */
-  #setupPipInteraction = (): void => {
+  #setupPip = (): void => {
     if (!this.#videoElement) return;
+
+    // Initialize PiP position
+    this.#pipX = this.#width - this.#width / 3 - 10;
+    this.#pipY = this.#height - this.#height / 3 - 10;
+    this.#pipWidth = this.#width / 3;
+    this.#pipHeight = this.#height / 3;
 
     let isDragging: boolean = false;
     let isResizing: boolean = false;

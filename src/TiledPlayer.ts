@@ -16,8 +16,6 @@ class TiledPlayer {
     await this.#player.init();
 
     await this.#player.load(DASH_URL_1, DASH_URL_2);
-
-    this.#player.dispose();
   };
 
   on<K extends keyof IEvents>(evtName: K, callback: (evt: IEvents[K]) => void): void {

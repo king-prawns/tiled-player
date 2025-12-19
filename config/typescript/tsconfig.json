@@ -17,7 +17,6 @@
       "@enum/*": ["./src/enum/*"],
       "@decoder/*": ["./src/decoder/*"],
       "@dispatcher/*": ["./src/dispatcher/*"],
-      "@generator/*": ["./src/generator/*"],
       "@encoder/*": ["./src/encoder/*"],
       "@interfaces/*": ["./src/interfaces/*"],
       "@parser/*": ["./src/parser/*"],
