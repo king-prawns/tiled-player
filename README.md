@@ -34,6 +34,4 @@ npm run dev
 ## Demo
 
 
-https://github.com/user-attachments/assets/5b8c4256-1bca-4c7e-88b2-1a4473b2f0d3
-
-
+https://github.com/user-attachments/assets/ad35e288-e7bc-4a42-b12b-c2c8e1cc39a1
