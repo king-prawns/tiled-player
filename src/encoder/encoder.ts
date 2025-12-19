@@ -117,7 +117,7 @@ class Encoder {
   #encodeVideo = (videoFrame: VideoFrame): void => {
     if (!this.#encoder) return;
 
-    if (this.#encoder.encodeQueueSize > 2) {
+    if (this.#encoder.encodeQueueSize > 10) {
       // eslint-disable-next-line no-console
       console.warn('[Encoder:video] Dropping frame, queue full');
       videoFrame.close();

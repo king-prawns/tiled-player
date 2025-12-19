@@ -74,16 +74,9 @@ class Decoder {
     return this.#videoFrames;
   }
 
-  // Pull video frame from buffer
   getVideoFrame = (): VideoFrame | undefined => this.#videoFrames.shift();
 
-  // Get all available audio data and clear buffer
-  drainAudioData = (): Array<AudioData> => {
-    const frames: Array<AudioData> = [...this.#audioFrames];
-    this.#audioFrames.length = 0;
-
-    return frames;
-  };
+  getAudioData = (): AudioData | undefined => this.#audioFrames.shift();
 
   feedData = (data: Uint8Array, type: 'video' | 'audio'): void => {
     if (type === 'video') {

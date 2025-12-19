@@ -490,7 +490,7 @@ class Player {
     }
     this.#lastFrameTime = timestamp;
 
-    this.#pullAudioData();
+    this.#processAudio();
 
     // Get frames from decoders
     const frame1: VideoFrame | undefined = this.#stream1.decoder.getVideoFrame();
@@ -559,23 +559,17 @@ class Player {
     this.#frameCount++;
   };
 
-  /**
-   * Pull decoded audio data from decoder buffers and encode them
-   * This is called every frame to collect new audio data
-   */
-  #pullAudioData = (): void => {
+  #processAudio = (): void => {
     if (!this.#stream1 || !this.#stream2 || !this.#audioEncoder) return;
 
-    // Pull all available audio data from stream1 (source1)
-    const audioData1: Array<AudioData> = this.#stream1.decoder.drainAudioData();
-    for (const audioData of audioData1) {
-      this.#processAudioData(audioData, 'source1');
+    const audioData1: AudioData | undefined = this.#stream1.decoder.getAudioData();
+    if (audioData1) {
+      this.#processAudioData(audioData1, 'source1');
     }
 
-    // Pull all available audio data from stream2 (source2)
-    const audioData2: Array<AudioData> = this.#stream2.decoder.drainAudioData();
-    for (const audioData of audioData2) {
-      this.#processAudioData(audioData, 'source2');
+    const audioData2: AudioData | undefined = this.#stream2.decoder.getAudioData();
+    if (audioData2) {
+      this.#processAudioData(audioData2, 'source2');
     }
   };
 
