@@ -282,7 +282,96 @@ class Player {
       return;
     }
 
+    this.#activeSource = sourceId;
     this.#dispatcher.emit(EEvent.changeSource, {source: sourceId});
+
+    // Clear audio buffer and reset position
+    this.#clearAudioBufferAndReposition();
+  };
+
+  /**
+   * Clear audio buffer and reposition to current time
+   * If buffer is updating, wait for updateend before clearing
+   */
+  #clearAudioBufferAndReposition = (): void => {
+    if (!this.#audioSourceBuffer || !this.#videoElement) {
+      return;
+    }
+
+    if (this.#audioSourceBuffer.updating) {
+      // Wait for current operation to complete, then clear
+      const onUpdateEnd = (): void => {
+        this.#audioSourceBuffer?.removeEventListener('updateend', onUpdateEnd);
+        this.#performAudioBufferClear();
+      };
+      this.#audioSourceBuffer.addEventListener('updateend', onUpdateEnd);
+    } else {
+      this.#performAudioBufferClear();
+    }
+  };
+
+  /**
+   * Perform the actual buffer clear and reposition
+   */
+  #performAudioBufferClear = (): void => {
+    if (!this.#audioSourceBuffer || !this.#videoElement) {
+      return;
+    }
+
+    const currentTime: number = this.#videoElement.currentTime;
+
+    // Clear the entire audio buffer
+    const buffered: TimeRanges = this.#audioSourceBuffer.buffered;
+    if (buffered.length > 0) {
+      this.#audioSourceBuffer.remove(buffered.start(0), buffered.end(buffered.length - 1));
+
+      // eslint-disable-next-line no-console
+      console.log(
+        `[Player] Audio buffer cleared, from position ${buffered.start(0)} to ${buffered.end(buffered.length - 1)}`
+      );
+    }
+
+    // eslint-disable-next-line no-console
+    this.#repositionAudioSegmentIndex(currentTime);
+  };
+
+  /**
+   * Find the correct segment index based on current time and start appending
+   */
+  #repositionAudioSegmentIndex = (currentTime: number): void => {
+    const activeSourceSegments: Array<SegmentReady> | undefined = this.#cachedAudioSegments.get(
+      this.#activeSource
+    );
+
+    if (!activeSourceSegments || activeSourceSegments.length === 0) {
+      this.#audioSegmentIndex = 1;
+      this.#audioInitAppended = false;
+
+      return;
+    }
+
+    // Convert currentTime (seconds) to microseconds for comparison
+    const currentTimeMicros: number = currentTime * 1_000_000;
+
+    // Find the segment that contains the current time (skip init segment at index 0)
+    let newIndex: number = 1;
+    for (let i: number = 1; i < activeSourceSegments.length; i++) {
+      const segment: SegmentReady = activeSourceSegments[i];
+      if (segment.timestamp <= currentTimeMicros) {
+        newIndex = i;
+      } else {
+        break;
+      }
+    }
+
+    this.#audioSegmentIndex = newIndex;
+    this.#audioInitAppended = false;
+
+    // eslint-disable-next-line no-console
+    console.log(`[Player] Audio repositioned to segment ${newIndex} for time ${currentTime}s`);
+
+    // Trigger audio append with new source
+    this.#appendAudio();
   };
 
   #runCompositorLoop = (): void => {

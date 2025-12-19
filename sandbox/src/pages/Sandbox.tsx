@@ -43,7 +43,7 @@ class Sandbox extends React.Component<IProps, IState> {
         </button>
         <p>Status: {status}</p>
         <div className="video-container">
-          <h3>Merged (MSE Video)</h3>
+          <h3>Tiled Player</h3>
           <video id="tiled-player" width="640" height="480"></video>
           <div className="buffer-info">
             <div className="info-row">
